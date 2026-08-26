@@ -20,22 +20,33 @@ class HealthMonitor:
         self._command_runner = command_runner
 
     def run(self, check_type: HealthCheckType, target: str, timeout: int = 3) -> HealthCheckResult:
+        target = str(target or "").strip()
+        if not target:
+            return HealthCheckResult(False, None, "Health-check target is empty.")
         if check_type == HealthCheckType.PING:
             started = perf_counter()
-            result = self._command_runner.run(["ping", "-c", "1", "-W", str(timeout), target], timeout=timeout + 2)
+            result = self._command_runner.run(
+                ["ping", "-c", "1", "-W", str(timeout), target],
+                timeout=timeout + 2,
+            )
             latency = (perf_counter() - started) * 1000
             return HealthCheckResult(
                 ok=result.return_code == 0,
-                latency_ms=round(latency, 2),
+                latency_ms=round(latency, 2) if result.return_code == 0 else None,
                 detail=result.stdout.strip() or result.stderr.strip(),
             )
         if check_type == HealthCheckType.TCP:
             started = perf_counter()
-            host, port = target.split(":", maxsplit=1)
+            if ":" not in target:
+                return HealthCheckResult(False, None, "TCP target must use host:port format.")
+            host, port_text = target.rsplit(":", maxsplit=1)
             try:
-                with socket.create_connection((host, int(port)), timeout=timeout):
+                port = int(port_text)
+                if not 1 <= port <= 65535:
+                    raise ValueError("port outside range")
+                with socket.create_connection((host, port), timeout=timeout):
                     latency = (perf_counter() - started) * 1000
                     return HealthCheckResult(True, round(latency, 2), "TCP port reachable")
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 return HealthCheckResult(False, None, str(exc))
         return HealthCheckResult(False, None, f"Unsupported check type: {check_type.value}")

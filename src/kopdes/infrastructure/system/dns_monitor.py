@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from kopdes.application.dtos.runtime_state import DnsStatus
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DnsMonitor:
@@ -10,11 +14,16 @@ class DnsMonitor:
         self._resolv_conf = resolv_conf
 
     def collect(self) -> DnsStatus:
-        if not self._resolv_conf.exists():
-            return DnsStatus()
+        try:
+            if not self._resolv_conf.exists():
+                return DnsStatus()
+            raw = self._resolv_conf.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            LOGGER.exception("Could not read resolver configuration")
+            return DnsStatus(resolver_source=str(self._resolv_conf))
         servers: list[str] = []
         search_domains: list[str] = []
-        for line in self._resolv_conf.read_text(encoding="utf-8", errors="ignore").splitlines():
+        for line in raw.splitlines():
             stripped = line.strip()
             if stripped.startswith("nameserver "):
                 servers.append(stripped.split(maxsplit=1)[1])

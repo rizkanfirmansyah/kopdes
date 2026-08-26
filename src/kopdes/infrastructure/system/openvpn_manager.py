@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterable
 from pathlib import Path
 
 from kopdes.application.dtos.runtime_state import ActionResult, OpenVpnConfig, OpenVpnSession
 from kopdes.domain.entities.connection_profile import ConnectionProfile
 from kopdes.infrastructure.system.classic_openvpn_manager import ClassicOpenVpnManager
 from kopdes.infrastructure.system.openvpn3_manager import OpenVpn3Manager
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class OpenVpnManager:
@@ -38,15 +43,21 @@ class OpenVpnManager:
         interface_name = str(profile.config_payload.get("interface_name", "")).strip() or None
         if backend == "openvpn3":
             fallback_path = self._classic_config_path(profile)
-            if not self._openvpn3_manager.available() and fallback_path:
-                return self._classic_manager.start_session(
-                    config_path=fallback_path,
-                    alias=profile.name,
-                    interface_name=interface_name,
-                    username=profile.username,
-                    password=password,
-                    auth_user_pass_required=self._config_bool(profile.config_payload.get("auth_user_pass_required")),
-                    auth_user_pass_file=self._config_text(profile.config_payload.get("auth_user_pass_file")),
+            if not self._openvpn3_manager.available():
+                if fallback_path:
+                    return self._start_classic(profile, fallback_path, interface_name, password)
+                generated = self._classic_manager.create_manual_config(profile)
+                if not generated.success:
+                    return ActionResult(
+                        False,
+                        "OpenVPN3 is unavailable and no usable OpenVPN config exists.",
+                        generated.details or generated.message,
+                    )
+                return self._start_classic(
+                    profile,
+                    generated.data.get("config_path", ""),
+                    interface_name,
+                    password,
                 )
             config_ref = str(
                 profile.config_payload.get("config_path")
@@ -54,18 +65,14 @@ class OpenVpnManager:
                 or profile.name
             )
             return self._openvpn3_manager.start_session(config_ref)
-        config_path = self._classic_config_path(profile) or str(
-            Path.home() / ".local" / "share" / "kopdes" / "openvpn" / "profiles" / f"{profile.name}.ovpn"
-        )
-        return self._classic_manager.start_session(
-            config_path=config_path,
-            alias=profile.name,
-            interface_name=interface_name,
-            username=profile.username,
-            password=password,
-            auth_user_pass_required=self._config_bool(profile.config_payload.get("auth_user_pass_required")),
-            auth_user_pass_file=self._config_text(profile.config_payload.get("auth_user_pass_file")),
-        )
+
+        config_path = self._classic_config_path(profile)
+        if not config_path:
+            generated = self._classic_manager.create_manual_config(profile)
+            if not generated.success:
+                return generated
+            config_path = generated.data.get("config_path", "")
+        return self._start_classic(profile, config_path, interface_name, password)
 
     def disconnect_profile(self, profile: ConnectionProfile) -> ActionResult:
         backend = str(profile.config_payload.get("openvpn_backend", "openvpn"))
@@ -82,6 +89,25 @@ class OpenVpnManager:
         if not session_path:
             return ActionResult(True, "No active OpenVPN session was found. Profile is already disconnected.")
         return self._classic_manager.disconnect_session(session_path)
+
+    def shutdown(self, profiles: Iterable[ConnectionProfile]) -> ActionResult:
+        """Stop KOPDES-managed classic and OpenVPN3 sessions during application exit."""
+        failures: list[str] = []
+        classic = self._classic_manager.stop_all_sessions()
+        if not classic.success:
+            failures.append(classic.details or classic.message)
+
+        managed_names = {profile.name for profile in profiles if profile.config_payload.get("openvpn_backend") == "openvpn3"}
+        if self._openvpn3_manager.available():
+            for session in self._openvpn3_manager.list_sessions():
+                if session.name not in managed_names:
+                    continue
+                result = self._openvpn3_manager.disconnect_session(session.session_path)
+                if not result.success:
+                    failures.append(f"{session.name}: {result.message}")
+        if failures:
+            return ActionResult(False, "Some OpenVPN sessions could not be stopped.", "\n".join(failures))
+        return ActionResult(True, classic.message)
 
     def remove_profile(self, profile: ConnectionProfile) -> ActionResult:
         backend = str(profile.config_payload.get("openvpn_backend", "openvpn"))
@@ -120,6 +146,25 @@ class OpenVpnManager:
                 return logs
         return self._classic_manager.read_runtime_logs(profile.name, limit)
 
+    def _start_classic(
+        self,
+        profile: ConnectionProfile,
+        config_path: str,
+        interface_name: str | None,
+        password: str | None,
+    ) -> ActionResult:
+        if not config_path:
+            return ActionResult(False, "OpenVPN config path is empty.")
+        return self._classic_manager.start_session(
+            config_path=config_path,
+            alias=profile.name,
+            interface_name=interface_name,
+            username=profile.username,
+            password=password,
+            auth_user_pass_required=self._config_bool(profile.config_payload.get("auth_user_pass_required")),
+            auth_user_pass_file=self._config_text(profile.config_payload.get("auth_user_pass_file")),
+        )
+
     def _pick_backend(self, preferred_backend: str) -> str:
         if preferred_backend == "openvpn3" and self._openvpn3_manager.available():
             return "openvpn3"
@@ -130,11 +175,16 @@ class OpenVpnManager:
         return "openvpn"
 
     def _classic_config_path(self, profile: ConnectionProfile) -> str | None:
-        config_path = str(profile.config_payload.get("config_path", "")).strip()
-        if config_path and Path(config_path).exists():
-            return config_path
-        fallback = Path.home() / ".local" / "share" / "kopdes" / "openvpn" / "profiles" / f"{profile.name}.ovpn"
-        if fallback.exists():
+        configured = str(profile.config_payload.get("config_path", "")).strip()
+        if configured:
+            path = Path(configured).expanduser()
+            return str(path) if path.is_file() else None
+        managed_path = getattr(self._classic_manager, "managed_config_path", None)
+        if callable(managed_path):
+            fallback = Path(managed_path(profile.name))
+        else:
+            fallback = Path.home() / ".local" / "share" / "kopdes" / "openvpn" / "profiles" / f"{profile.name}.ovpn"
+        if fallback.is_file():
             return str(fallback)
         return None
 

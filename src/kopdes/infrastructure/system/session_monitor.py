@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
-from kopdes.application.dtos.runtime_state import (
-    ConnectionInspector,
-    ConnectionRow,
-    InterfaceSnapshot,
-)
+from kopdes.application.dtos.runtime_state import ConnectionInspector, ConnectionRow, DnsStatus, InterfaceSnapshot
 from kopdes.domain.entities.connection_profile import ConnectionProfile
 from kopdes.domain.entities.connection_session import ConnectionSession
 from kopdes.shared.enums import ConnectionStatus, HealthCheckType, ProtocolType
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 class SessionMonitor:
+    PENDING_TIMEOUT_SECONDS = 10
+
     def __init__(
         self,
         openvpn_manager,
@@ -38,10 +40,12 @@ class SessionMonitor:
         profiles: list[ConnectionProfile],
         latest_sessions: dict[str, ConnectionSession],
     ) -> list[ConnectionRow]:
-        interfaces = self._interface_monitor.collect()
-        openvpn_sessions = {item.name: item for item in self._openvpn_manager.list_sessions()}
-        ppp_active = self._ppp_manager.list_active_connections()
-        routes = self._route_manager.list_routes()
+        interfaces = self._safe_collect(self._interface_monitor.collect, [])
+        openvpn_sessions = {
+            item.name: item for item in self._safe_collect(self._openvpn_manager.list_sessions, [])
+        }
+        ppp_active = self._safe_collect(self._ppp_manager.list_active_connections, {})
+        routes = self._safe_collect(self._route_manager.list_routes, [])
         rows: list[ConnectionRow] = []
 
         for profile in profiles:
@@ -67,10 +71,12 @@ class SessionMonitor:
                     status=runtime_status,
                     name=profile.name,
                     protocol=profile.protocol.value,
-                    server=profile.server_address,
-                    backend=str(profile.config_payload.get("openvpn_backend", "system")) if profile.protocol == ProtocolType.OPENVPN else "system",
+                    server=profile.server_address or "-",
+                    backend=str(profile.config_payload.get("openvpn_backend", "system"))
+                    if profile.protocol == ProtocolType.OPENVPN
+                    else "system",
                     local_ip=interface.ipv4 if interface and interface.ipv4 else "-",
-                    remote_ip=profile.server_address,
+                    remote_ip=profile.server_address or "-",
                     latency_ms=None,
                     rx_rate_bps=rx_rate,
                     tx_rate_bps=tx_rate,
@@ -94,12 +100,12 @@ class SessionMonitor:
         row: ConnectionRow,
         logs: list[str],
     ) -> ConnectionInspector:
-        routes = self._route_manager.list_routes()
-        rules = self._route_manager.list_rules()
-        dns = self._dns_monitor.collect()
-        interfaces = self._interface_monitor.collect()
-        scoped_interfaces = [item for item in interfaces if item.name == row.interface_name] or interfaces
-        scoped_routes = [item for item in routes if item.device == row.interface_name] or routes
+        routes = self._safe_collect(self._route_manager.list_routes, [])
+        rules = self._safe_collect(self._route_manager.list_rules, [])
+        dns = self._safe_collect(self._dns_monitor.collect, DnsStatus())
+        interfaces = self._safe_collect(self._interface_monitor.collect, [])
+        scoped_interfaces = [item for item in interfaces if item.name == row.interface_name]
+        scoped_routes = [item for item in routes if item.device == row.interface_name]
         latency_ms, packet_loss = self._probe(profile.server_address, row.status)
         mtu = str(scoped_interfaces[0].mtu) if scoped_interfaces else "-"
         updated_row = ConnectionRow(
@@ -151,29 +157,30 @@ class SessionMonitor:
         ppp_active: dict[str, dict[str, str]],
     ) -> InterfaceSnapshot | None:
         if profile.name in ppp_active:
-            device = ppp_active[profile.name].get("device")
-            for item in interfaces:
-                if item.name == device:
-                    return item
+            device = str(ppp_active[profile.name].get("device", "")).strip()
+            if device and device != "-":
+                return next((item for item in interfaces if item.name == device), None)
+
         session = openvpn_sessions.get(profile.name)
-        if profile.protocol == ProtocolType.OPENVPN and session and getattr(session, "interface_name", None):
-            session_interface = str(session.interface_name).strip()
-            for item in interfaces:
-                if item.name == session_interface:
-                    return item
-            if session_interface in {"tun", "tap", "ppp"}:
-                for item in interfaces:
-                    if item.name.startswith(session_interface) and item.is_up:
-                        return item
+        if profile.protocol == ProtocolType.OPENVPN and session:
+            session_interface = str(getattr(session, "interface_name", "") or "").strip()
+            if session_interface:
+                exact = next((item for item in interfaces if item.name == session_interface), None)
+                if exact:
+                    return exact
+                if session_interface in {"tun", "tap", "ppp"}:
+                    candidates = [
+                        item
+                        for item in interfaces
+                        if item.name.startswith(session_interface) and item.is_up and item.ipv4
+                    ]
+                    # Never assign the same anonymous tunnel to multiple sessions.
+                    if len(candidates) == 1:
+                        return candidates[0]
+
         explicit = str(profile.config_payload.get("interface_name", "")).strip()
         if explicit and profile.protocol != ProtocolType.OPENVPN:
-            for item in interfaces:
-                if item.name == explicit:
-                    return item
-        if profile.protocol != ProtocolType.OPENVPN:
-            for item in interfaces:
-                if item.kind == "ppp":
-                    return item
+            return next((item for item in interfaces if item.name == explicit), None)
         return None
 
     def _resolve_runtime_status(
@@ -187,22 +194,22 @@ class SessionMonitor:
         if profile.protocol == ProtocolType.OPENVPN:
             if session:
                 session_status = self._resolve_openvpn_session_status(session.status_text, persisted)
-                if interface and interface.kind in {"tun", "tap"} and interface.is_up and interface.ipv4:
-                    if session_status in {ConnectionStatus.FAILED, ConnectionStatus.RECONNECTING}:
-                        return session_status
-                    return ConnectionStatus.ACTIVE
-                if session_status != ConnectionStatus.ACTIVE:
+                if session_status in {ConnectionStatus.FAILED, ConnectionStatus.RECONNECTING}:
                     return session_status
-                return ConnectionStatus.CONNECTING
-            if interface and interface.kind in {"tun", "tap"} and interface.is_up and interface.ipv4:
-                return ConnectionStatus.DEGRADED
-        elif profile.name in ppp_active:
+                if self._interface_is_live(interface, {"tun", "tap"}):
+                    return ConnectionStatus.ACTIVE
+                if session_status == ConnectionStatus.ACTIVE:
+                    return ConnectionStatus.DEGRADED
+                return session_status
+            # An interface without a managed OpenVPN process may belong to another tool.
+            # Persisted state is only retained briefly while a newly started process appears.
+            return self._pending_or_inactive(persisted)
+
+        if profile.name in ppp_active and self._active_device(ppp_active[profile.name]):
             return ConnectionStatus.ACTIVE
-        if persisted:
-            if persisted.status == ConnectionStatus.DISCONNECTING:
-                return ConnectionStatus.INACTIVE
-            return persisted.status
-        return ConnectionStatus.INACTIVE
+        if self._interface_is_live(interface, {"ppp"}):
+            return ConnectionStatus.ACTIVE
+        return self._pending_or_inactive(persisted)
 
     def _resolve_openvpn_session_status(
         self,
@@ -220,12 +227,38 @@ class SessionMonitor:
             if persisted and persisted.status == ConnectionStatus.RECONNECTING:
                 return ConnectionStatus.RECONNECTING
             return ConnectionStatus.CONNECTING
-        return ConnectionStatus.DEGRADED
+        return ConnectionStatus.CONNECTING
+
+    def _pending_or_inactive(self, session: ConnectionSession | None) -> ConnectionStatus:
+        if session is None:
+            return ConnectionStatus.INACTIVE
+        if session.status in {ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING}:
+            if session.started_at is None:
+                return session.status
+            started = session.started_at
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - started).total_seconds() < self.PENDING_TIMEOUT_SECONDS:
+                return session.status
+            return ConnectionStatus.FAILED
+        if session.status == ConnectionStatus.FAILED:
+            return ConnectionStatus.FAILED
+        return ConnectionStatus.INACTIVE
+
+    def _interface_is_live(self, interface: InterfaceSnapshot | None, kinds: set[str]) -> bool:
+        return bool(interface and interface.kind in kinds and interface.is_up and interface.ipv4)
+
+    def _active_device(self, entry: dict[str, str]) -> bool:
+        return bool(str(entry.get("device", "")).strip() not in {"", "-", "--"})
 
     def _probe(self, host: str, status: ConnectionStatus) -> tuple[float | None, str]:
-        if status not in {ConnectionStatus.ACTIVE, ConnectionStatus.DEGRADED}:
+        if status not in {ConnectionStatus.ACTIVE, ConnectionStatus.DEGRADED} or not host:
             return None, "-"
-        result = self._health_monitor.run(HealthCheckType.PING, host, timeout=2)
+        try:
+            result = self._health_monitor.run(HealthCheckType.PING, host, timeout=2)
+        except Exception:
+            LOGGER.exception("Health probe failed for %s", host)
+            return None, "-"
         packet_loss = "-"
         if result.detail:
             match = re.search(r"(\d+(?:\.\d+)?)%\s+packet loss", result.detail)
@@ -239,8 +272,7 @@ class SessionMonitor:
         started = session.started_at
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
-        delta = datetime.now(timezone.utc) - started
-        seconds = int(delta.total_seconds())
+        seconds = max(int((datetime.now(timezone.utc) - started).total_seconds()), 0)
         hours, rem = divmod(seconds, 3600)
         minutes, secs = divmod(rem, 60)
         if hours:
@@ -248,3 +280,10 @@ class SessionMonitor:
         if minutes:
             return f"{minutes}m {secs}s"
         return f"{secs}s"
+
+    def _safe_collect(self, callback, default):
+        try:
+            return callback()
+        except Exception:
+            LOGGER.exception("Runtime monitor operation failed")
+            return default() if callable(default) else default

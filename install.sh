@@ -61,6 +61,9 @@ apt_install_if_possible() {
   if ! have_cmd openvpn; then
     need_apt=1
   fi
+  if ! have_cmd sshpass; then
+    need_apt=1
+  fi
 
   if [[ "${need_apt}" -eq 0 ]]; then
     echo "[KOPDES] Core system dependencies already available, skipping apt install"
@@ -74,7 +77,7 @@ apt_install_if_possible() {
     return 0
   fi
 
-  if ! sudo apt-get install -y python3 python3-venv python3-pip openvpn ppp iproute2 network-manager; then
+  if ! sudo apt-get install -y python3 python3-venv python3-pip openvpn ppp iproute2 network-manager openssh-client sshpass; then
     warn "apt-get install failed. Continuing with whatever dependencies are already installed."
   fi
 }

@@ -112,12 +112,20 @@ class MainWindow(QMainWindow):
 
         import_button = QPushButton("Import OVPN")
         import_button.clicked.connect(self._import_ovpn)
+        mapping_button = QPushButton("SSH Mapping")
+        mapping_button.clicked.connect(self._open_port_mapping)
         add_button = QPushButton("+ Add New")
         add_button.setObjectName("primaryButton")
         add_button.clicked.connect(self._add_profile)
         layout.addWidget(import_button)
+        layout.addWidget(mapping_button)
         layout.addWidget(add_button)
         return card
+
+    def _open_port_mapping(self) -> None:
+        self._bottom_dock.show()
+        self._bottom_tabs.setCurrentWidget(self._port_mapping_panel)
+        self._port_mapping_panel.add_mapping()
 
     def _build_brand_block(self):
         row = QHBoxLayout()

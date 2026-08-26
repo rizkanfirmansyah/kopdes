@@ -87,6 +87,9 @@ class PortMappingPanel(QWidget):
             return None
         return self._model.mapping_id_at(index.row())
 
+    def add_mapping(self) -> None:
+        self._add_mapping()
+
     def _add_mapping(self) -> None:
         dialog = PortMappingDialog(parent=self)
         if dialog.exec() != dialog.DialogCode.Accepted:

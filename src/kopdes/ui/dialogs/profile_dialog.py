@@ -107,8 +107,8 @@ class ProfileDialog(QDialog):
         layout.addWidget(buttons)
 
     def to_input(self) -> ConnectionProfileInput:
-        protocol = self._protocol.currentData()
-        if not isinstance(protocol, ProtocolType):
+        protocol = self._selected_protocol()
+        if protocol is None:
             raise ValueError("A valid protocol must be selected.")
         config_payload: dict[str, object] = {}
         if self._interface_name.text().strip():
@@ -140,7 +140,7 @@ class ProfileDialog(QDialog):
         )
 
     def validation_errors(self) -> list[str]:
-        protocol = self._protocol.currentData()
+        protocol = self._selected_protocol()
         errors: list[str] = []
         if not self._name.text().strip():
             errors.append("Connection name is required.")
@@ -157,6 +157,15 @@ class ProfileDialog(QDialog):
         else:
             errors.append("A valid protocol must be selected.")
         return errors
+
+    def _selected_protocol(self) -> ProtocolType | None:
+        value = self._protocol.currentData()
+        if isinstance(value, ProtocolType):
+            return value
+        try:
+            return ProtocolType(str(value))
+        except (TypeError, ValueError):
+            return None
 
     def _accept_form(self) -> None:
         errors = self.validation_errors()

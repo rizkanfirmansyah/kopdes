@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from kopdes.domain.entities.connection_profile import ConnectionProfile
 from kopdes.domain.entities.connection_session import ConnectionSession
 from kopdes.domain.entities.event_log import EventLog
+from kopdes.domain.entities.port_mapping import PortMapping
 
 
 class ConnectionProfileRepository(ABC):
@@ -46,4 +47,26 @@ class EventLogRepository(ABC):
 
     @abstractmethod
     def list_recent(self, limit: int = 200) -> list[EventLog]:
+        raise NotImplementedError
+
+
+class PortMappingRepository(ABC):
+    @abstractmethod
+    def save(self, mapping: PortMapping) -> PortMapping:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_all(self) -> list[PortMapping]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_by_id(self, mapping_id: str) -> PortMapping | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_by_name(self, name: str) -> PortMapping | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete(self, mapping_id: str) -> None:
         raise NotImplementedError

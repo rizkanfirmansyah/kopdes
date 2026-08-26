@@ -32,3 +32,20 @@ class DashboardStats:
     bandwidth_usage_mbps: float
     system_load: float
     memory_usage_percent: float
+
+
+@dataclass(slots=True)
+class PortMappingInput:
+    name: str
+    description: str
+    ssh_host: str
+    ssh_username: str
+    local_port: int
+    remote_host: str
+    remote_port: int
+    ssh_port: int = 22
+    local_host: str = "127.0.0.1"
+    identity_file: str | None = None
+    password: str | None = None
+    auto_reconnect: bool = True
+    enabled: bool = True

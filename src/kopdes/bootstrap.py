@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ from kopdes.infrastructure.db.models.connection_session import ConnectionSession
 from kopdes.infrastructure.db.models.event_log import EventLogModel
 from kopdes.infrastructure.db.models.health_check import HealthCheckModel
 from kopdes.infrastructure.db.models.route_policy import RoutePolicyModel
+from kopdes.infrastructure.db.models.port_mapping import PortMappingModel
 from kopdes.infrastructure.db.models.tag import ProfileTagModel, TagModel
 from kopdes.infrastructure.db.repositories.connection_profile_repository import (
     SqlAlchemyConnectionProfileRepository,
@@ -26,6 +28,9 @@ from kopdes.infrastructure.db.repositories.connection_session_repository import 
 )
 from kopdes.infrastructure.db.repositories.event_log_repository import (
     SqlAlchemyEventLogRepository,
+)
+from kopdes.infrastructure.db.repositories.port_mapping_repository import (
+    SqlAlchemyPortMappingRepository,
 )
 from kopdes.infrastructure.db.session import create_session_factory
 from kopdes.infrastructure.logging.setup import configure_logging
@@ -41,10 +46,14 @@ from kopdes.infrastructure.system.openvpn_manager import OpenVpnManager
 from kopdes.infrastructure.system.ppp_manager import PppManager
 from kopdes.infrastructure.system.route_manager import RouteManager
 from kopdes.infrastructure.system.session_monitor import SessionMonitor
+from kopdes.infrastructure.system.ssh_tunnel_manager import SshTunnelManager
 from kopdes.infrastructure.system.system_metrics import SystemMetricsCollector
 from kopdes.shared.enums import EventLevel, ProtocolType
 from kopdes.ui.views.main_window import MainWindow
 from kopdes.ui.widgets.terminal_panel import TerminalPanel
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -71,14 +80,20 @@ def build_application(config_path: Path | None = None) -> BootstrapContext:
     profile_repository = SqlAlchemyConnectionProfileRepository(session_factory)
     session_repository = SqlAlchemyConnectionSessionRepository(session_factory)
     event_repository = SqlAlchemyEventLogRepository(session_factory)
+    port_mapping_repository = SqlAlchemyPortMappingRepository(session_factory)
 
-    _seed_demo_data(profile_repository, event_repository, secret_manager, settings.data_dir)
+    try:
+        _seed_demo_data(profile_repository, event_repository, secret_manager, settings.data_dir)
+    except Exception:
+        # Demo data must never prevent an existing installation from opening.
+        LOGGER.exception("Demo data seed skipped")
 
     classic_openvpn_manager = ClassicOpenVpnManager(command_runner, settings.data_dir)
     openvpn3_manager = OpenVpn3Manager(command_runner)
     openvpn_manager = OpenVpnManager(classic_openvpn_manager, openvpn3_manager)
     ppp_manager = PppManager(command_runner)
     route_manager = RouteManager(command_runner)
+    ssh_tunnel_manager = SshTunnelManager(command_runner, settings.data_dir)
     session_monitor = SessionMonitor(
         openvpn_manager=openvpn_manager,
         ppp_manager=ppp_manager,
@@ -98,6 +113,8 @@ def build_application(config_path: Path | None = None) -> BootstrapContext:
         route_manager=route_manager,
         session_monitor=session_monitor,
         metrics_collector=SystemMetricsCollector(),
+        port_mapping_repository=port_mapping_repository,
+        ssh_tunnel_manager=ssh_tunnel_manager,
     )
 
     app = QApplication.instance() or QApplication([])

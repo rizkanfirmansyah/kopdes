@@ -118,3 +118,26 @@ class ConnectionInspector:
     log_messages: list[str] = field(default_factory=list)
     upload_history: list[float] = field(default_factory=list)
     download_history: list[float] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class PortMappingSession:
+    mapping_id: str
+    name: str
+    status_text: str
+    pid: int | None = None
+    local_listening: bool = False
+    last_error: str | None = None
+
+
+@dataclass(slots=True)
+class PortMappingRow:
+    mapping_id: str
+    status: ConnectionStatus
+    name: str
+    local_endpoint: str
+    remote_endpoint: str
+    ssh_target: str
+    pid: int | None = None
+    duration_text: str = "-"
+    last_error: str = "-"

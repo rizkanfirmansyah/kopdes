@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QSortFilterProxyModel, Qt, QTimer
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -29,9 +30,13 @@ from kopdes.ui.dialogs.profile_dialog import ProfileDialog
 from kopdes.ui.models.connection_table_model import ConnectionTableModel
 from kopdes.ui.widgets.connection_inspector import ConnectionInspectorWidget
 from kopdes.ui.widgets.log_viewer import LogViewer
+from kopdes.ui.widgets.port_mapping_panel import PortMappingPanel
 from kopdes.ui.widgets.status_card import StatusCard
 from kopdes.ui.widgets.terminal_panel import TerminalPanel
 from kopdes.ui.widgets.traffic_chart_delegate import TrafficChartDelegate
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -51,7 +56,10 @@ class MainWindow(QMainWindow):
         self._proxy_model.setFilterKeyColumn(-1)
         self._log_viewer = LogViewer()
         self._inspector = ConnectionInspectorWidget()
+        self._port_mapping_panel = PortMappingPanel(control_center_service)
         self._selected_profile_id: str | None = None
+        self._shutting_down = False
+        self._monitoring_error_reported = False
         self._logo_path = Path(__file__).resolve().parents[4] / "logo.png"
 
         self.setWindowTitle("KOPDES")
@@ -61,7 +69,7 @@ class MainWindow(QMainWindow):
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
-        self._timer.start(refresh_interval_ms)
+        self._timer.start(max(int(refresh_interval_ms), 250))
 
         self._status_animation_timer = QTimer(self)
         self._status_animation_timer.timeout.connect(self._table.viewport().update)
@@ -238,7 +246,8 @@ class MainWindow(QMainWindow):
         return panel
 
     def _build_bottom_dock(self) -> None:
-        dock = QDockWidget("Logs And Terminal", self)
+        dock = QDockWidget("Logs, Terminal And SSH Mappings", self)
+        self._bottom_dock = dock
         dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -246,6 +255,8 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(self._log_viewer, "Activity Log")
         tabs.addTab(self._terminal_panel, "Terminal")
+        tabs.addTab(self._port_mapping_panel, "SSH Port Mapping")
+        self._bottom_tabs = tabs
         dock.setWidget(tabs)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
 
@@ -256,22 +267,37 @@ class MainWindow(QMainWindow):
         self._inspector.route_add_requested.connect(self._add_route)
         self._inspector.route_delete_requested.connect(self._delete_route)
         self._inspector.route_metric_change_requested.connect(self._change_metric)
+        self._port_mapping_panel.status_message.connect(
+            lambda message: self.statusBar().showMessage(message, 6000)
+        )
 
     def refresh(self) -> None:
-        stats = self._control_center_service.get_dashboard_stats()
-        self._cards["total"].set_value(str(stats.total_connections))
-        self._cards["active"].set_value(str(stats.active_connections))
-        self._cards["failed"].set_value(str(stats.failed_connections))
-        self._cards["bandwidth"].set_value(f"{stats.bandwidth_usage_mbps:.2f} Mbps")
-        self._cards["load"].set_value(f"{stats.system_load:.2f}")
-        self._cards["memory"].set_value(f"{stats.memory_usage_percent:.2f}%")
-        rows = self._control_center_service.list_connection_rows()
-        self._table_model.set_rows(rows)
-        for row_index in range(len(rows)):
-            self._table.setRowHeight(row_index, 56)
-        self._log_viewer.replace_entries(self._control_center_service.list_logs(limit=200))
-        if self._selected_profile_id:
-            self._load_inspector(self._selected_profile_id)
+        if self._shutting_down:
+            return
+        try:
+            stats = self._control_center_service.get_dashboard_stats()
+            self._cards["total"].set_value(str(stats.total_connections))
+            self._cards["active"].set_value(str(stats.active_connections))
+            self._cards["failed"].set_value(str(stats.failed_connections))
+            self._cards["bandwidth"].set_value(f"{stats.bandwidth_usage_mbps:.2f} Mbps")
+            self._cards["load"].set_value(f"{stats.system_load:.2f}")
+            self._cards["memory"].set_value(f"{stats.memory_usage_percent:.2f}%")
+            rows = self._control_center_service.list_connection_rows()
+            self._table_model.set_rows(rows)
+            for row_index in range(len(rows)):
+                self._table.setRowHeight(row_index, 56)
+            self._log_viewer.replace_entries(self._control_center_service.list_logs(limit=200))
+            self._port_mapping_panel.refresh()
+            if self._selected_profile_id:
+                self._load_inspector(self._selected_profile_id)
+            if self._monitoring_error_reported:
+                self.statusBar().showMessage("Monitoring recovered.", 3000)
+                self._monitoring_error_reported = False
+        except Exception as exc:
+            if not self._monitoring_error_reported:
+                LOGGER.exception("Dashboard refresh failed")
+                self.statusBar().showMessage("Monitoring temporarily unavailable: " + self._safe_error(exc), 5000)
+                self._monitoring_error_reported = True
 
     def _selection_changed(self) -> None:
         indexes = self._table.selectionModel().selectedRows()
@@ -287,7 +313,14 @@ class MainWindow(QMainWindow):
             self._load_inspector(profile_id)
 
     def _load_inspector(self, profile_id: str) -> None:
-        inspector = self._control_center_service.get_connection_inspector(profile_id)
+        try:
+            inspector = self._control_center_service.get_connection_inspector(profile_id)
+        except Exception as exc:
+            LOGGER.exception("Connection inspector refresh failed")
+            self._inspector.set_inspector(None)
+            self._details_stack.setCurrentIndex(0)
+            self.statusBar().showMessage("Inspector unavailable: " + self._safe_error(exc), 5000)
+            return
         self._inspector.set_inspector(inspector)
         self._details_stack.setCurrentIndex(1 if inspector else 0)
 
@@ -295,7 +328,15 @@ class MainWindow(QMainWindow):
         dialog = ProfileDialog()
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
-        profile = self._control_center_service.save_profile(dialog.to_input())
+        try:
+            profile = self._control_center_service.save_profile(dialog.to_input())
+        except ValueError as exc:
+            self._show_operation_error("Invalid Connection Profile", exc)
+            return
+        except Exception as exc:
+            LOGGER.exception("Manual profile creation failed")
+            self._show_operation_error("Profile Save Error", exc)
+            return
         self.statusBar().showMessage(f"Saved profile '{profile.name}'.", 5000)
         self.refresh()
 
@@ -306,7 +347,15 @@ class MainWindow(QMainWindow):
         dialog = ProfileDialog(profile)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
-        updated = self._control_center_service.save_profile(dialog.to_input(), profile.id)
+        try:
+            updated = self._control_center_service.save_profile(dialog.to_input(), profile.id)
+        except ValueError as exc:
+            self._show_operation_error("Invalid Connection Profile", exc)
+            return
+        except Exception as exc:
+            LOGGER.exception("Profile update failed")
+            self._show_operation_error("Profile Save Error", exc)
+            return
         self.statusBar().showMessage(f"Updated profile '{updated.name}'.", 5000)
         self.refresh()
 
@@ -314,7 +363,12 @@ class MainWindow(QMainWindow):
         profile = self._selected_profile()
         if profile is None:
             return
-        result = self._control_center_service.delete_profile(profile.id)
+        try:
+            result = self._control_center_service.delete_profile(profile.id)
+        except Exception as exc:
+            LOGGER.exception("Profile deletion failed")
+            self._show_operation_error("Profile Delete Error", exc)
+            return
         self._show_result(result)
         self.refresh()
 
@@ -322,7 +376,12 @@ class MainWindow(QMainWindow):
         profile = self._selected_profile()
         if profile is None:
             return
-        result = self._control_center_service.connect_profile(profile.id)
+        try:
+            result = self._control_center_service.connect_profile(profile.id)
+        except Exception as exc:
+            LOGGER.exception("connect_profile failed")
+            self._show_operation_error("Connection Error", exc)
+            return
         self._show_result(result)
         self.refresh()
 
@@ -330,7 +389,12 @@ class MainWindow(QMainWindow):
         profile = self._selected_profile()
         if profile is None:
             return
-        result = self._control_center_service.disconnect_profile(profile.id)
+        try:
+            result = self._control_center_service.disconnect_profile(profile.id)
+        except Exception as exc:
+            LOGGER.exception("disconnect_profile failed")
+            self._show_operation_error("Disconnect Error", exc)
+            return
         self._show_result(result)
         self.refresh()
 
@@ -338,7 +402,12 @@ class MainWindow(QMainWindow):
         profile = self._selected_profile()
         if profile is None:
             return
-        result = self._control_center_service.reconnect_profile(profile.id)
+        try:
+            result = self._control_center_service.reconnect_profile(profile.id)
+        except Exception as exc:
+            LOGGER.exception("reconnect_profile failed")
+            self._show_operation_error("Reconnect Error", exc)
+            return
         self._show_result(result)
         self.refresh()
 
@@ -377,12 +446,17 @@ class MainWindow(QMainWindow):
             )
             if not ok or not password:
                 return
-        result = self._control_center_service.import_ovpn(
-            Path(path),
-            alias.strip(),
-            username.strip() or None,
-            password,
-        )
+        try:
+            result = self._control_center_service.import_ovpn(
+                Path(path),
+                alias.strip(),
+                username.strip() or None,
+                password,
+            )
+        except Exception as exc:
+            LOGGER.exception("OpenVPN import failed")
+            self._show_operation_error("Import Error", exc)
+            return
         self._show_import_result(result)
         self.refresh()
 
@@ -397,12 +471,22 @@ class MainWindow(QMainWindow):
             inspector = self._control_center_service.get_connection_inspector(self._selected_profile_id)
             if inspector and inspector.row.interface_name != "-":
                 device = inspector.row.interface_name
-        result = self._control_center_service.add_route(destination.strip(), gateway.strip() or None, device, metric)
+        try:
+            result = self._control_center_service.add_route(destination.strip(), gateway.strip() or None, device, metric)
+        except Exception as exc:
+            LOGGER.exception("Route add failed")
+            self._show_operation_error("Route Error", exc)
+            return
         self._show_result(result)
         self.refresh()
 
     def _delete_route(self, destination: str, table: str) -> None:
-        result = self._control_center_service.delete_route(destination, None if table == "-" else table)
+        try:
+            result = self._control_center_service.delete_route(destination, None if table == "-" else table)
+        except Exception as exc:
+            LOGGER.exception("Route deletion failed")
+            self._show_operation_error("Route Error", exc)
+            return
         self._show_result(result)
         self.refresh()
 
@@ -410,21 +494,61 @@ class MainWindow(QMainWindow):
         metric, ok = QInputDialog.getInt(self, "Change Route Metric", "Metric", 100, 1, 9999)
         if not ok:
             return
-        result = self._control_center_service.change_route_metric(
-            destination,
-            metric,
-            None if gateway == "-" else gateway,
-            None if device == "-" else device,
-            None if table == "-" else table,
-        )
+        try:
+            result = self._control_center_service.change_route_metric(
+                destination,
+                metric,
+                None if gateway == "-" else gateway,
+                None if device == "-" else device,
+                None if table == "-" else table,
+            )
+        except Exception as exc:
+            LOGGER.exception("Route metric change failed")
+            self._show_operation_error("Route Error", exc)
+            return
         self._show_result(result)
         self.refresh()
+
+    def shutdown(self):
+        """Stop timers and all managed network sessions exactly once."""
+        if self._shutting_down:
+            return None
+        self._shutting_down = True
+        self._timer.stop()
+        self._status_animation_timer.stop()
+        try:
+            result = self._control_center_service.shutdown()
+        except Exception as exc:
+            LOGGER.exception("KOPDES shutdown failed")
+            return self._show_operation_error("Shutdown Error", exc, popup=False)
+        if not result.success:
+            LOGGER.error("KOPDES shutdown completed with failures: %s", result.details or result.message)
+        return result
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.shutdown()
+        event.accept()
 
     def _selected_profile(self):
         if not self._selected_profile_id:
             QMessageBox.information(self, "KOPDES", "Select a connection first.")
             return None
-        return self._control_center_service.get_profile(self._selected_profile_id)
+        try:
+            return self._control_center_service.get_profile(self._selected_profile_id)
+        except Exception as exc:
+            LOGGER.exception("Could not load selected profile")
+            self._show_operation_error("Profile Error", exc)
+            return None
+
+    def _show_operation_error(self, title: str, error: Exception, popup: bool = True):
+        message = self._safe_error(error)
+        if popup:
+            QMessageBox.critical(self, title, message)
+        self.statusBar().showMessage(message, 8000)
+
+    def _safe_error(self, error: Exception) -> str:
+        detail = str(error).strip()
+        return detail or error.__class__.__name__
 
     def _show_import_result(self, result) -> None:
         if result.success:

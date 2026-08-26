@@ -1,0 +1,9 @@
+services:
+  kopdes:
+    build: .
+    container_name: kopdes-dev
+    environment:
+      QT_QPA_PLATFORM: offscreen
+    volumes:
+      - .:/app
+    command: ["python", "-m", "pytest"]

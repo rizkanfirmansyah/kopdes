@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=KOPDES
+Exec=kopdes
+Icon=utilities-terminal
+Terminal=false
+Categories=Network;System;

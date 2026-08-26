@@ -1,0 +1,59 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+coverage.xml
+htmlcov/
+
+# Packaging and build output
+dist/
+build/
+*.egg-info/
+pip-wheel-metadata/
+
+# Local application state
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.log
+runtime/
+artifacts/
+backups/
+
+# VPN profiles and runtime secrets. Keep credentials/configuration out of Git.
+*.ovpn
+*.auth
+*.secret
+*.key
+*.pem
+*.p12
+*.pfx
+*.status
+*.pid
+profiles/
+secrets/
+
+# Local configuration and environment files
+.env
+.env.*
+!.env.example
+config.yaml
+config.local.yaml
+
+# Editors and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

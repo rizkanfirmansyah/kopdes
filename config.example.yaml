@@ -1,0 +1,6 @@
+app_name: KOPDES
+database_url: sqlite:////home/USER/.local/share/kopdes/kopdes.db
+log_level: INFO
+secret_key_path: /home/USER/.config/kopdes/secret.key
+data_dir: /home/USER/.local/share/kopdes
+refresh_interval_ms: 5000

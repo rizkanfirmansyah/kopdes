@@ -18,6 +18,13 @@ have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+apt_package_installed() {
+  if ! have_cmd dpkg-query; then
+    return 1
+  fi
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'
+}
+
 ensure_not_root() {
   if [[ "${EUID}" -eq 0 ]]; then
     echo "[KOPDES] Error: do not run install.sh with sudo or as root." >&2
@@ -64,6 +71,15 @@ apt_install_if_possible() {
   if ! have_cmd sshpass; then
     need_apt=1
   fi
+  if ! have_cmd nmcli; then
+    need_apt=1
+  fi
+  if have_cmd dpkg-query && ! apt_package_installed network-manager-l2tp; then
+    need_apt=1
+  fi
+  if have_cmd dpkg-query && ! apt_package_installed network-manager-pptp; then
+    need_apt=1
+  fi
 
   if [[ "${need_apt}" -eq 0 ]]; then
     echo "[KOPDES] Core system dependencies already available, skipping apt install"
@@ -77,7 +93,7 @@ apt_install_if_possible() {
     return 0
   fi
 
-  if ! sudo apt-get install -y python3 python3-venv python3-pip openvpn ppp iproute2 network-manager openssh-client sshpass; then
+  if ! sudo apt-get install -y python3 python3-venv python3-pip openvpn ppp iproute2 network-manager openssh-client sshpass network-manager-l2tp network-manager-pptp network-manager-openvpn xl2tpd strongswan; then
     warn "apt-get install failed. Continuing with whatever dependencies are already installed."
   fi
 }

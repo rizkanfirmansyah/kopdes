@@ -26,6 +26,17 @@ KOPDES can manage multiple SSH local forwards, for example:
 
 Mappings are persisted in SQLite with encrypted passwords. Runtime metadata contains only the managed PID and endpoint details; password authentication uses `sshpass -d` so the password is not placed in the process argument list. SSH identity files or an SSH agent are preferred. Install `openssh-client` and `sshpass` with `install.sh`, then open the `SSH Port Mapping` tab in the bottom dock to add, edit, connect, disconnect, or delete mappings.
 
+## PPP and L2TP runtime dependencies
+
+PPP-family profiles are activated through NetworkManager. L2TP and L2TP/IPSec require the NetworkManager plugin in addition to the base `network-manager` package:
+
+```bash
+sudo apt-get install network-manager-l2tp network-manager-l2tp-gnome xl2tpd strongswan
+sudo systemctl restart NetworkManager
+```
+
+PPTP requires `network-manager-pptp`; OpenVPN profiles using the NetworkManager backend require `network-manager-openvpn`. `install.sh` checks and attempts to install these packages. If APT is blocked by an unrelated third-party repository, fix that repository first and rerun the installer, or install the packages manually.
+
 ## Stack
 
 - Python 3.12+

@@ -132,6 +132,9 @@ class PppManager:
             timeout=60,
         )
         if result.return_code != 0:
+            plugin_error = self._missing_vpn_plugin(profile.protocol, self._result_detail(result))
+            if plugin_error is not None:
+                return plugin_error
             return ActionResult(False, "Connection startup failed.", self._result_detail(result))
         return ActionResult(True, f"Connected '{profile.name}'.", self._result_detail(result))
 
@@ -191,7 +194,11 @@ class PppManager:
         result = self._run_privileged(command, timeout=45)
         if result.return_code == 0:
             return ActionResult(True, f"Prepared system profile '{profile.name}'.", self._result_detail(result))
-        if "already exists" in self._result_detail(result).lower():
+        detail = self._result_detail(result)
+        plugin_error = self._missing_vpn_plugin(profile.protocol, detail)
+        if plugin_error is not None:
+            return plugin_error
+        if "already exists" in detail.lower():
             # Existing profiles are kept, but autoconnect is disabled so KOPDES owns shutdown.
             modify = self._run_privileged(
                 ["nmcli", "connection", "modify", "id", profile.name, "connection.autoconnect", "no"],
@@ -201,6 +208,30 @@ class PppManager:
                 return ActionResult(True, f"Reused system profile '{profile.name}'.", self._result_detail(modify))
             return ActionResult(False, "Failed to update the existing nmcli profile.", self._result_detail(modify))
         return ActionResult(False, "Failed to create nmcli profile.", self._result_detail(result))
+
+    def _missing_vpn_plugin(
+        self,
+        protocol: ProtocolType,
+        detail: str,
+    ) -> ActionResult | None:
+        normalized = detail.lower()
+        if "not installed" not in normalized and "was not installed" not in normalized:
+            return None
+        plugin: str | None = None
+        if protocol in {ProtocolType.L2TP, ProtocolType.L2TP_IPSEC} and "networkmanager.l2tp" in normalized:
+            plugin = "network-manager-l2tp"
+        elif protocol == ProtocolType.PPTP and "networkmanager.pptp" in normalized:
+            plugin = "network-manager-pptp"
+        elif protocol == ProtocolType.OPENVPN and "networkmanager.openvpn" in normalized:
+            plugin = "network-manager-openvpn"
+        if plugin is None:
+            return None
+        return ActionResult(
+            False,
+            f"NetworkManager {protocol.value.upper()} plugin is not installed.",
+            f"Install '{plugin}', then retry the connection. On Ubuntu/Debian: "
+            f"sudo apt-get install {plugin}.",
+        )
 
     def _run_privileged(self, command: list[str], timeout: int) -> CommandResult:
         runner = getattr(self._command_runner, "run_privileged", None)

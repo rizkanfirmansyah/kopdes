@@ -118,6 +118,9 @@ class OpenVpnManager:
                 result = self._openvpn3_manager.remove_config(config_ref)
                 if result.success:
                     return result
+                # Do not delete the KOPDES record while the OpenVPN3 profile
+                # may still exist in the system backend.
+                return result
             if classic_config_path:
                 return self._normalize_delete_result(
                     self._classic_manager.remove_config(classic_config_path),

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
+from threading import Lock, RLock
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from kopdes.application.dtos.connection_profile_dto import (
     ConnectionProfileInput,
@@ -14,6 +18,8 @@ from kopdes.application.dtos.runtime_state import (
     ActionResult,
     ConnectionInspector,
     ConnectionRow,
+    DashboardSnapshot,
+    NetworkSnapshot,
     PortMappingRow,
 )
 from kopdes.application.ports.repositories import (
@@ -29,14 +35,24 @@ from kopdes.domain.entities.port_mapping import PortMapping
 from kopdes.infrastructure.security.crypto import SecretManager
 from kopdes.infrastructure.system.config_parser import ConfigImportParser
 from kopdes.infrastructure.system.system_metrics import SystemMetrics, SystemMetricsCollector
-from kopdes.shared.enums import ConnectionStatus, EventLevel, ProtocolType
+from kopdes.shared.enums import ConnectionStatus, EventLevel, HealthCheckType, ProtocolType
 
 
 LOGGER = logging.getLogger(__name__)
 
 
+def _profile_operation_locked(method):
+    @wraps(method)
+    def wrapper(self, profile_id: str, *args, **kwargs):
+        with self._profile_operation(profile_id):
+            return method(self, profile_id, *args, **kwargs)
+
+    return wrapper
+
+
 class ControlCenterService:
     CONNECT_TIMEOUT_SECONDS = 10
+    MAX_AUTO_RETRIES = 5
 
     def __init__(
         self,
@@ -52,6 +68,7 @@ class ControlCenterService:
         metrics_collector: SystemMetricsCollector,
         port_mapping_repository: PortMappingRepository | None = None,
         ssh_tunnel_manager=None,
+        command_runner=None,
     ) -> None:
         self._profile_repository = profile_repository
         self._session_repository = session_repository
@@ -65,6 +82,9 @@ class ControlCenterService:
         self._metrics_collector = metrics_collector
         self._port_mapping_repository = port_mapping_repository
         self._ssh_tunnel_manager = ssh_tunnel_manager
+        self._command_runner = command_runner
+        self._profile_locks_guard = Lock()
+        self._profile_locks: WeakValueDictionary[str, RLock] = WeakValueDictionary()
 
     def get_dashboard_stats(self) -> DashboardStats:
         rows = self.list_connection_rows()
@@ -83,6 +103,45 @@ class ControlCenterService:
             system_load=metrics.system_load,
             memory_usage_percent=metrics.memory_usage_percent,
         )
+
+    def get_dashboard_snapshot(self, log_limit: int = 200) -> DashboardSnapshot:
+        profiles = self._profile_repository.list_all()
+        latest_sessions = self._latest_sessions_by_profile()
+        rows = self._session_monitor.build_rows(profiles, latest_sessions)
+        latest_sessions, changed = self._expire_stale_pending_sessions(profiles, latest_sessions, rows)
+        if changed:
+            rows = self._session_monitor.build_rows(profiles, latest_sessions)
+        try:
+            metrics = self._metrics_collector.collect()
+        except Exception:
+            LOGGER.exception("System metrics collection failed")
+            metrics = SystemMetrics(0.0, 0.0, 0.0)
+        stats = DashboardStats(
+            total_connections=len(rows),
+            active_connections=sum(1 for row in rows if row.status == ConnectionStatus.ACTIVE),
+            failed_connections=sum(1 for row in rows if row.status == ConnectionStatus.FAILED),
+            bandwidth_usage_mbps=metrics.bandwidth_usage_mbps,
+            system_load=metrics.system_load,
+            memory_usage_percent=metrics.memory_usage_percent,
+        )
+        return DashboardSnapshot(
+            stats=stats,
+            profiles=profiles,
+            rows=rows,
+            logs=self.list_logs(limit=log_limit),
+            port_mapping_rows=self.list_port_mapping_rows(),
+        )
+
+    def get_network_snapshot(self) -> NetworkSnapshot:
+        return NetworkSnapshot(
+            interfaces=self._session_monitor.collect_interfaces(),
+            routes=self._session_monitor.collect_routes(),
+            rules=self._session_monitor.collect_rules(),
+            dns=self._session_monitor.collect_dns(),
+        )
+
+    def run_health_check(self, check_type: str, target: str, timeout: int = 3):
+        return self._session_monitor.run_health_check(HealthCheckType(check_type), target, timeout)
 
     def list_connection_rows(self) -> list[ConnectionRow]:
         try:
@@ -334,13 +393,13 @@ class ControlCenterService:
         if any(char in server for char in "\r\n"):
             errors.append("Server address contains an invalid newline.")
 
-        if data.port is not None and not 1 <= int(data.port) <= 65535:
+        if data.port is not None and not self._valid_int_range(data.port, 1, 65535):
             errors.append("Port must be between 1 and 65535.")
-        if not 1 <= int(data.route_metric) <= 9999:
+        if not self._valid_int_range(data.route_metric, 1, 9999):
             errors.append("Route metric must be between 1 and 9999.")
-        if data.mtu is not None and not 576 <= int(data.mtu) <= 9200:
+        if data.mtu is not None and not self._valid_int_range(data.mtu, 576, 9200):
             errors.append("MTU must be between 576 and 9200.")
-        if data.keepalive is not None and not 0 <= int(data.keepalive) <= 3600:
+        if data.keepalive is not None and not self._valid_int_range(data.keepalive, 0, 3600):
             errors.append("Keepalive must be between 0 and 3600 seconds.")
 
         if protocol in {ProtocolType.PPPOE, ProtocolType.PPTP, ProtocolType.L2TP, ProtocolType.L2TP_IPSEC}:
@@ -381,16 +440,16 @@ class ControlCenterService:
             description=str(data.description or "").strip(),
             server_address=server,
             protocol=protocol,
-            port=data.port,
+            port=int(data.port) if data.port is not None else None,
             username=str(data.username).strip() if data.username else None,
             encrypted_password=encrypted_password,
-            route_metric=data.route_metric,
-            dns_servers=[str(item).strip() for item in data.dns_servers if str(item).strip()],
-            mtu=data.mtu,
-            keepalive=data.keepalive,
+            route_metric=int(data.route_metric),
+            dns_servers=[str(item).strip() for item in (data.dns_servers or []) if str(item).strip()],
+            mtu=int(data.mtu) if data.mtu is not None else None,
+            keepalive=int(data.keepalive) if data.keepalive is not None else None,
             auto_reconnect=data.auto_reconnect,
             allow_multiple=data.allow_multiple,
-            tags=[str(item).strip() for item in data.tags if str(item).strip()],
+            tags=[str(item).strip() for item in (data.tags or []) if str(item).strip()],
             config_payload=config_payload,
             created_at=existing.created_at if existing else None,
             updated_at=datetime.now(timezone.utc),
@@ -422,34 +481,76 @@ class ControlCenterService:
         username: str | None = None,
         password: str | None = None,
     ) -> ActionResult:
-        preview = self.preview_ovpn_import(path, alias)
+        alias = str(alias or "").strip()
+        if not alias:
+            return ActionResult(False, "OpenVPN profile name is required.")
+        try:
+            existing = self._profile_repository.get_by_name(alias)
+        except Exception as exc:
+            LOGGER.exception("Could not check duplicate OpenVPN profile %s", alias)
+            return ActionResult(False, "Could not validate the OpenVPN profile name.", self._safe_error(exc))
+        if existing is not None:
+            return ActionResult(False, f"A connection named '{alias}' already exists.")
+        try:
+            preview = self.preview_ovpn_import(path, alias)
+        except (OSError, ValueError) as exc:
+            LOGGER.warning("OpenVPN import validation failed for %s: %s", path, exc)
+            return ActionResult(False, "OpenVPN import validation failed.", self._safe_error(exc))
         preview_errors = [str(item) for item in preview.get("errors", []) if str(item).strip()]
         if preview_errors:
             return ActionResult(False, "OpenVPN import validation failed.", "\n".join(preview_errors))
-        import_result = self._openvpn_manager.import_config(str(path), alias, preferred_backend="openvpn")
+        try:
+            import_result = self._openvpn_manager.import_config(
+                str(path),
+                alias,
+                preferred_backend="openvpn",
+            )
+        except Exception as exc:
+            LOGGER.exception("OpenVPN system import failed for %s", alias)
+            return ActionResult(False, "OpenVPN import failed.", self._safe_error(exc))
         if not import_result.success:
             return import_result
         config_payload = dict(preview["config_payload"])
         config_payload.update(import_result.data)
-        profile = self.save_profile(
-            ConnectionProfileInput(
-                name=alias,
-                description=str(preview["description"]),
-                server_address=str(preview["server_address"]),
-                protocol=ProtocolType.OPENVPN,
-                port=preview["port"] if isinstance(preview["port"], int) else None,
-                username=username or preview["username"],
-                password=password,
-                route_metric=100,
-                dns_servers=[],
-                mtu=None,
-                keepalive=None,
-                auto_reconnect=True,
-                allow_multiple=True,
-                tags=self._import_tags(config_payload),
-                config_payload=config_payload,
+        try:
+            profile = self.save_profile(
+                ConnectionProfileInput(
+                    name=alias,
+                    description=str(preview["description"]),
+                    server_address=str(preview["server_address"]),
+                    protocol=ProtocolType.OPENVPN,
+                    port=preview["port"] if isinstance(preview["port"], int) else None,
+                    username=username or preview["username"],
+                    password=password,
+                    route_metric=100,
+                    dns_servers=[],
+                    mtu=None,
+                    keepalive=None,
+                    auto_reconnect=True,
+                    allow_multiple=True,
+                    tags=self._import_tags(config_payload),
+                    config_payload=config_payload,
+                )
             )
-        )
+        except Exception as exc:
+            LOGGER.exception("OpenVPN profile persistence failed after import: %s", alias)
+            remove_config = getattr(self._openvpn_manager, "remove_config", None)
+            if callable(remove_config):
+                try:
+                    cleanup = remove_config(str(import_result.data.get("config_path") or alias))
+                    if not cleanup.success:
+                        LOGGER.error(
+                            "OpenVPN rollback failed for %s: %s",
+                            alias,
+                            cleanup.details or cleanup.message,
+                        )
+                except Exception:
+                    LOGGER.exception("OpenVPN rollback raised an exception for %s", alias)
+            return ActionResult(
+                False,
+                "OpenVPN was imported but could not be saved in KOPDES.",
+                self._safe_error(exc),
+            )
         detail_parts = [import_result.details] if import_result.details else []
         preview_warnings = [str(item) for item in preview.get("warnings", []) if str(item).strip()]
         if self._config_bool(config_payload.get("auth_user_pass_required")) and not password:
@@ -460,9 +561,24 @@ class ControlCenterService:
         self._append_event(profile.id, EventLevel.INFO, "openvpn.import", import_result.message, details)
         return ActionResult(True, import_result.message, details, {"profile_id": profile.id, **import_result.data})
 
+    @_profile_operation_locked
     def connect_profile(self, profile_id: str) -> ActionResult:
         profile = self._require_profile(profile_id)
         latest = self._latest_sessions_by_profile().get(profile.id)
+        if latest and latest.status in {ConnectionStatus.ACTIVE, ConnectionStatus.DEGRADED}:
+            return ActionResult(
+                False,
+                "Connection is already active.",
+                "Disconnect it before starting another session.",
+            )
+        if latest and self._transition_is_recent(latest):
+            return ActionResult(
+                False,
+                "Connection operation is already in progress.",
+                f"Current state: {latest.status.value}. Wait for it to finish or disconnect it.",
+            )
+
+        started_at = datetime.now(timezone.utc)
         try:
             runtime_profile = self._build_runtime_profile(profile)
             password = self._decrypt_password(profile)
@@ -473,11 +589,13 @@ class ControlCenterService:
         except Exception as exc:
             LOGGER.exception("Connection start failed for %s", profile.name)
             result = ActionResult(False, "Connection could not be started.", self._safe_error(exc))
+
         session = ConnectionSession(
             id=str(uuid4()),
             profile_id=profile.id,
             status=ConnectionStatus.CONNECTING if result.success else ConnectionStatus.FAILED,
-            started_at=datetime.now(timezone.utc),
+            started_at=started_at,
+            ended_at=None if result.success else datetime.now(timezone.utc),
             reconnect_count=latest.reconnect_count if latest else 0,
             last_error=None if result.success else (result.details or result.message),
         )
@@ -491,8 +609,18 @@ class ControlCenterService:
         )
         return result
 
+    @_profile_operation_locked
     def disconnect_profile(self, profile_id: str) -> ActionResult:
         profile = self._require_profile(profile_id)
+        latest = self._latest_sessions_by_profile().get(profile.id)
+        if latest and latest.status == ConnectionStatus.DISCONNECTING and self._transition_is_recent(latest):
+            return ActionResult(
+                False,
+                "Disconnect operation is already in progress.",
+                "Wait for the current disconnect to finish.",
+            )
+
+        started_at = datetime.now(timezone.utc)
         try:
             if profile.protocol == ProtocolType.OPENVPN:
                 result = self._openvpn_manager.disconnect_profile(profile)
@@ -505,8 +633,9 @@ class ControlCenterService:
             id=str(uuid4()),
             profile_id=profile.id,
             status=ConnectionStatus.DISCONNECTING if result.success else ConnectionStatus.FAILED,
-            started_at=datetime.now(timezone.utc),
+            started_at=started_at,
             ended_at=datetime.now(timezone.utc) if result.success else None,
+            reconnect_count=latest.reconnect_count if latest else 0,
             last_error=None if result.success else (result.details or result.message),
         )
         self._save_session(session)
@@ -519,22 +648,57 @@ class ControlCenterService:
         )
         return result
 
+    @_profile_operation_locked
     def reconnect_profile(self, profile_id: str) -> ActionResult:
         profile = self._require_profile(profile_id)
         latest = self._latest_sessions_by_profile().get(profile_id)
-        disconnect = self.disconnect_profile(profile_id)
-        runtime_profile = self._build_runtime_profile(profile)
-        password = self._decrypt_password(profile)
-        if profile.protocol == ProtocolType.OPENVPN:
-            connect = self._openvpn_manager.start_session(runtime_profile, password)
-        else:
-            connect = self._ppp_manager.connect(runtime_profile, password)
         reconnect_count = (latest.reconnect_count if latest else 0) + 1
+        disconnect = self.disconnect_profile(profile_id)
+        if not disconnect.success:
+            now = datetime.now(timezone.utc)
+            result = ActionResult(
+                False,
+                "Reconnect aborted because the existing connection could not be stopped.",
+                disconnect.details or disconnect.message,
+            )
+            self._save_session(
+                ConnectionSession(
+                    id=str(uuid4()),
+                    profile_id=profile_id,
+                    status=ConnectionStatus.FAILED,
+                    started_at=now,
+                    ended_at=now,
+                    reconnect_count=reconnect_count,
+                    last_error=result.details or result.message,
+                )
+            )
+            self._append_event(
+                profile_id,
+                EventLevel.ERROR,
+                "connection.reconnect",
+                result.message,
+                result.details,
+            )
+            return result
+
+        try:
+            runtime_profile = self._build_runtime_profile(profile)
+            password = self._decrypt_password(profile)
+            if profile.protocol == ProtocolType.OPENVPN:
+                connect = self._openvpn_manager.start_session(runtime_profile, password)
+            else:
+                connect = self._ppp_manager.connect(runtime_profile, password)
+        except Exception as exc:
+            LOGGER.exception("Connection reconnect failed for %s", profile.name)
+            connect = ActionResult(False, "Connection reconnect failed.", self._safe_error(exc))
+
+        now = datetime.now(timezone.utc)
         session = ConnectionSession(
             id=str(uuid4()),
             profile_id=profile_id,
             status=ConnectionStatus.RECONNECTING if connect.success else ConnectionStatus.FAILED,
-            started_at=datetime.now(timezone.utc),
+            started_at=now,
+            ended_at=None if connect.success else now,
             reconnect_count=reconnect_count,
             last_error=None if connect.success else (connect.details or connect.message),
         )
@@ -546,38 +710,93 @@ class ControlCenterService:
             connect.message,
             connect.details,
         )
-        if connect.success:
-            return connect
-        detail_parts = [disconnect.message]
-        if disconnect.details:
-            detail_parts.append(disconnect.details)
-        if connect.details:
-            detail_parts.append(connect.details)
-        return ActionResult(False, connect.message, "; ".join(part for part in detail_parts if part))
+        return connect
 
+    def recover_failed_connections(self) -> ActionResult:
+        'Run one bounded auto-reconnect pass; callers schedule the next pass.'
+        try:
+            profiles = self._profile_repository.list_all()
+            latest_by_profile = self._latest_sessions_by_profile()
+        except Exception as exc:
+            LOGGER.exception("Could not inspect profiles for auto-reconnect")
+            return ActionResult(False, "Auto-reconnect inspection failed.", self._safe_error(exc))
+
+        attempted: list[str] = []
+        failures: list[str] = []
+        now = datetime.now(timezone.utc)
+        for profile in profiles:
+            session = latest_by_profile.get(profile.id)
+            if not profile.auto_reconnect or session is None or session.status != ConnectionStatus.FAILED:
+                continue
+            if session.reconnect_count >= self.MAX_AUTO_RETRIES:
+                continue
+            failure_at = session.ended_at or session.started_at
+            if failure_at is None:
+                continue
+            if failure_at.tzinfo is None:
+                failure_at = failure_at.replace(tzinfo=timezone.utc)
+            backoff = min(32, 2 ** max(1, session.reconnect_count + 1))
+            if (now - failure_at).total_seconds() < backoff:
+                continue
+            attempted.append(profile.name)
+            result = self.reconnect_profile(profile.id)
+            if not result.success:
+                failures.append(f"{profile.name}: {result.details or result.message}")
+
+        if failures:
+            return ActionResult(
+                False,
+                "Auto-reconnect completed with failures.",
+                "\n".join(failures),
+                {"attempted": str(len(attempted))},
+            )
+        if attempted:
+            return ActionResult(
+                True,
+                f"Auto-reconnect attempted for {len(attempted)} connection(s).",
+                data={"attempted": str(len(attempted))},
+            )
+        return ActionResult(True, "No connections are eligible for auto-reconnect.")
+
+    @_profile_operation_locked
     def delete_profile(self, profile_id: str) -> ActionResult:
         profile = self._require_profile(profile_id)
-        external_result = ActionResult(True, "Profile deleted from KOPDES.")
-        if profile.protocol == ProtocolType.OPENVPN:
-            external_result = self._openvpn_manager.remove_profile(profile)
-        elif profile.protocol in {
-            ProtocolType.PPP,
-            ProtocolType.PPPOE,
-            ProtocolType.PPTP,
-            ProtocolType.L2TP,
-            ProtocolType.L2TP_IPSEC,
-        }:
-            external_result = self._ppp_manager.delete(profile)
+        try:
+            external_result = ActionResult(True, "Profile deleted from KOPDES.")
+            if profile.protocol == ProtocolType.OPENVPN:
+                external_result = self._openvpn_manager.remove_profile(profile)
+            elif profile.protocol in {
+                ProtocolType.PPP,
+                ProtocolType.PPPOE,
+                ProtocolType.PPTP,
+                ProtocolType.L2TP,
+                ProtocolType.L2TP_IPSEC,
+            }:
+                external_result = self._ppp_manager.delete(profile)
+        except Exception as exc:
+            LOGGER.exception("Profile deletion failed for %s", profile.name)
+            external_result = ActionResult(False, "Profile could not be deleted.", self._safe_error(exc))
         if not external_result.success:
             self._append_event(profile_id, EventLevel.ERROR, "profile.delete", external_result.message, external_result.details)
             return external_result
-        self._profile_repository.delete(profile_id)
+        try:
+            self._profile_repository.delete(profile_id)
+        except Exception as exc:
+            LOGGER.exception("Profile record deletion failed for %s", profile.name)
+            result = ActionResult(
+                False,
+                "The system profile was handled, but the KOPDES record could not be deleted.",
+                self._safe_error(exc),
+            )
+            self._append_event(profile_id, EventLevel.ERROR, "profile.delete", result.message, result.details)
+            return result
         self._append_event(profile_id, EventLevel.INFO, "profile.delete", external_result.message, external_result.details)
         return external_result
 
     def shutdown(self) -> ActionResult:
         """Stop all sessions owned by KOPDES without creating new pending sessions."""
         failures: list[str] = []
+        self.request_stop_all()
         try:
             profiles = self._profile_repository.list_all()
         except Exception as exc:
@@ -630,6 +849,18 @@ class ControlCenterService:
             return ActionResult(False, message, details)
         LOGGER.info("KOPDES shutdown completed; managed connections stopped.")
         return ActionResult(True, "Stopped all managed connections.")
+
+    def request_stop_all(self) -> None:
+        """Signal owned active commands before the bounded shutdown workflow."""
+        targets = (self._command_runner, self._ssh_tunnel_manager)
+        for target in targets:
+            request_stop = getattr(target, "request_stop_all", None) if target is not None else None
+            if not callable(request_stop):
+                continue
+            try:
+                request_stop()
+            except Exception:
+                LOGGER.exception("Could not request stop for managed runtime processes")
 
     def get_connection_inspector(self, profile_id: str) -> ConnectionInspector | None:
         profile = self._profile_repository.get_by_id(profile_id)
@@ -698,6 +929,31 @@ class ControlCenterService:
         except Exception:
             LOGGER.exception("Could not persist event %s", event_type)
 
+    @contextmanager
+    def _profile_operation(self, profile_id: str):
+        lock = self._profile_lock(profile_id)
+        with lock:
+            yield
+
+    def _profile_lock(self, profile_id: str) -> RLock:
+        key = str(profile_id)
+        with self._profile_locks_guard:
+            return self._profile_locks.setdefault(key, RLock())
+
+    def _transition_is_recent(self, session: ConnectionSession) -> bool:
+        if session.status not in {
+            ConnectionStatus.CONNECTING,
+            ConnectionStatus.RECONNECTING,
+            ConnectionStatus.DISCONNECTING,
+        }:
+            return False
+        if session.started_at is None:
+            return False
+        started_at = session.started_at
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) - started_at < timedelta(seconds=self.CONNECT_TIMEOUT_SECONDS)
+
     def _save_session(self, session: ConnectionSession) -> ConnectionSession:
         try:
             return self._session_repository.save(session)
@@ -724,32 +980,84 @@ class ControlCenterService:
 
         for row in rows:
             session = latest_sessions.get(row.profile_id)
-            if session is None or session.status not in {ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING}:
-                continue
-            if row.status not in {ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING}:
-                continue
-            if session.started_at is None:
-                continue
-
-            started_at = session.started_at
-            if started_at.tzinfo is None:
-                started_at = started_at.replace(tzinfo=timezone.utc)
-            if now - started_at < timedelta(seconds=self.CONNECT_TIMEOUT_SECONDS):
-                continue
-
             profile = profiles_by_id.get(row.profile_id)
-            if profile is None:
+            if session is None or profile is None:
                 continue
+
+            lock = self._profile_lock(profile.id)
+            if not lock.acquire(blocking=False):
+                # A connect/disconnect operation owns this profile. The next
+                # monitoring pass will reconcile it after that operation ends.
+                continue
+            try:
+                current = self._latest_sessions_by_profile().get(profile.id)
+                if current is None or current.id != session.id:
+                    continue
+                replacement = self._reconcile_runtime_row(profile, current, row, now)
+                if replacement is None:
+                    continue
+                latest_sessions[profile.id] = replacement
+                changed = True
+            finally:
+                lock.release()
+
+        return latest_sessions, changed
+
+    def _reconcile_runtime_row(
+        self,
+        profile: ConnectionProfile,
+        session: ConnectionSession,
+        row: ConnectionRow,
+        now: datetime,
+    ) -> ConnectionSession | None:
+        if session.status in {ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING}:
+            if row.status == ConnectionStatus.ACTIVE:
+                active_session = ConnectionSession(
+                    id=str(uuid4()),
+                    profile_id=profile.id,
+                    status=ConnectionStatus.ACTIVE,
+                    started_at=now,
+                    reconnect_count=session.reconnect_count,
+                    last_error=None,
+                    local_ip=None if row.local_ip == "-" else row.local_ip,
+                    remote_ip=None if row.remote_ip == "-" else row.remote_ip,
+                )
+                saved = self._save_session(active_session)
+                self._append_event(
+                    profile.id,
+                    EventLevel.INFO,
+                    "connection.connected",
+                    f"Connection '{profile.name}' reached a connected state.",
+                )
+                return saved
+
+            failure_message: str | None = None
+            if row.status == ConnectionStatus.FAILED:
+                row_error = str(row.last_error or "").strip()
+                failure_message = (
+                    row_error
+                    if row_error and row_error != "-"
+                    else "The managed runtime reported a failure."
+                )
+            elif row.status in {ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING}:
+                if session.started_at is None:
+                    return None
+                started_at = session.started_at
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=timezone.utc)
+                if now - started_at >= timedelta(seconds=self.CONNECT_TIMEOUT_SECONDS):
+                    failure_message = (
+                        f"Connection exceeded {self.CONNECT_TIMEOUT_SECONDS} seconds "
+                        "without reaching a connected state."
+                    )
+            if failure_message is None:
+                return None
 
             try:
                 disconnect_result = self._disconnect_runtime_profile(profile)
             except Exception as exc:
-                LOGGER.exception("Timeout cleanup failed for %s", profile.name)
-                disconnect_result = ActionResult(False, "Timeout cleanup failed.", self._safe_error(exc))
-            timeout_message = (
-                f"Connection exceeded {self.CONNECT_TIMEOUT_SECONDS} seconds without reaching a connected state."
-            )
-            details = disconnect_result.details or disconnect_result.message
+                LOGGER.exception("Failed runtime cleanup for %s", profile.name)
+                disconnect_result = ActionResult(False, "Runtime cleanup failed.", self._safe_error(exc))
             failed_session = ConnectionSession(
                 id=str(uuid4()),
                 profile_id=profile.id,
@@ -757,19 +1065,56 @@ class ControlCenterService:
                 started_at=now,
                 ended_at=now,
                 reconnect_count=session.reconnect_count,
-                last_error=timeout_message,
+                last_error=failure_message,
             )
-            latest_sessions[profile.id] = self._save_session(failed_session)
+            saved = self._save_session(failed_session)
             self._append_event(
                 profile.id,
                 EventLevel.ERROR,
-                "connection.timeout",
-                f"Connection '{profile.name}' timed out while {row.status.value}.",
-                details,
+                "connection.failed",
+                f"Connection '{profile.name}' failed while {row.status.value}.",
+                disconnect_result.details or disconnect_result.message,
             )
-            changed = True
+            return saved
 
-        return latest_sessions, changed
+        if session.status == ConnectionStatus.ACTIVE and row.status in {
+            ConnectionStatus.INACTIVE,
+            ConnectionStatus.FAILED,
+        }:
+            row_error = str(row.last_error or "").strip()
+            error = row_error if row_error and row_error != "-" else "Managed runtime is no longer detected."
+            failed_session = ConnectionSession(
+                id=str(uuid4()),
+                profile_id=profile.id,
+                status=ConnectionStatus.FAILED,
+                started_at=now,
+                ended_at=now,
+                reconnect_count=session.reconnect_count,
+                last_error=error,
+            )
+            saved = self._save_session(failed_session)
+            self._append_event(
+                profile.id,
+                EventLevel.ERROR,
+                "connection.runtime_lost",
+                f"Connection '{profile.name}' is no longer present in the runtime.",
+                error,
+            )
+            return saved
+
+        if session.status == ConnectionStatus.DISCONNECTING and row.status == ConnectionStatus.INACTIVE:
+            inactive_session = ConnectionSession(
+                id=str(uuid4()),
+                profile_id=profile.id,
+                status=ConnectionStatus.INACTIVE,
+                started_at=session.started_at,
+                ended_at=now,
+                reconnect_count=session.reconnect_count,
+                last_error=None,
+            )
+            return self._save_session(inactive_session)
+
+        return None
 
     def _save_port_mapping_state(self, mapping: PortMapping) -> None:
         if self._port_mapping_repository is None:
@@ -833,13 +1178,23 @@ class ControlCenterService:
         incoming: dict[str, object],
     ) -> dict[str, object]:
         payload = dict(existing.config_payload) if existing else {}
-        payload.update(incoming)
+        payload.update(incoming if isinstance(incoming, dict) else {})
+        payload.pop("raw", None)
+        for key in list(payload):
+            if str(key).strip().lower() in {"password", "passwd", "secret", "token", "private_key", "private-key"}:
+                payload.pop(key, None)
         plain_ipsec_psk = str(payload.pop("ipsec_psk", "")).strip()
         if plain_ipsec_psk:
             payload["encrypted_ipsec_psk"] = self._secret_manager.encrypt(plain_ipsec_psk)
         elif existing and "encrypted_ipsec_psk" in existing.config_payload:
             payload["encrypted_ipsec_psk"] = existing.config_payload["encrypted_ipsec_psk"]
         return payload
+
+    def _valid_int_range(self, value: object, lower: int, upper: int) -> bool:
+        try:
+            return lower <= int(value) <= upper
+        except (TypeError, ValueError, OverflowError):
+            return False
 
     def _build_runtime_profile(self, profile: ConnectionProfile) -> ConnectionProfile:
         payload = dict(profile.config_payload)

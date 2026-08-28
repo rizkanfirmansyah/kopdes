@@ -162,6 +162,7 @@ def test_classic_openvpn_manager_disconnect_uses_interactive_privilege(monkeypat
     monkeypatch.setattr("os.kill", lambda pid, sig: None)
     runner = FakeRunner()
     manager = ClassicOpenVpnManager(runner, tmp_path)
+    monkeypatch.setattr(manager, "_pid_looks_like_openvpn", lambda pid: True)
     runtime_dir = tmp_path / "openvpn" / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     pid_path = runtime_dir / "majalaya.pid"
@@ -212,3 +213,59 @@ def test_classic_openvpn_manager_creates_auth_file_for_auth_user_pass(monkeypatc
     assert auth_path.exists() is True
     assert auth_path.read_text(encoding="utf-8") == "riezkan\nsecret\n"
     assert (["chmod", "644", str(tmp_path / "openvpn" / "runtime" / "Majalaya.pid")], False) in runner.privileged_calls
+
+
+def test_classic_openvpn_manager_trims_runtime_log(tmp_path: Path) -> None:
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+    manager.MAX_LOG_BYTES = 32
+    log_path = tmp_path / "openvpn" / "runtime" / "session.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_bytes(b"x" * 100)
+
+    inode = log_path.stat().st_ino
+    with log_path.open("ab") as active_writer:
+        manager._trim_log_file({"log_path": str(log_path)})
+        active_writer.write(b"y" * 40 + b"tail")
+        active_writer.flush()
+        manager._trim_log_file({"log_path": str(log_path)})
+
+    assert log_path.stat().st_size <= manager.MAX_LOG_BYTES
+    assert log_path.stat().st_ino == inode
+    assert log_path.read_bytes().endswith(b"tail")
+
+
+def test_classic_openvpn_manager_accepts_verified_root_pid_when_signal_probe_is_denied(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+
+    def deny_signal_probe(pid, sig):
+        raise PermissionError
+
+    monkeypatch.setattr("os.kill", deny_signal_probe)
+    monkeypatch.setattr(manager, "_pid_looks_like_openvpn", lambda _pid: True)
+    monkeypatch.setattr(manager, "_process_start_time", lambda _pid: "12345")
+
+    assert manager._pid_running(4242, {"pid_start_time": "12345"}) is True
+    assert manager._pid_running(4242, {}) is False
+
+def test_classic_openvpn_polling_does_not_request_privileged_stale_cleanup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+    runtime_dir = tmp_path / "openvpn" / "runtime"
+    meta_path = runtime_dir / "stale.json"
+    meta_path.write_text('{"name": "Stale", "pid": 4242}', encoding="utf-8")
+    cleanup_calls: list[bool] = []
+
+    monkeypatch.setattr(manager, "_pid_running", lambda _pid, _payload: False)
+    monkeypatch.setattr(
+        manager,
+        "_cleanup_runtime_files",
+        lambda _payload, _meta_path, allow_privileged=True: cleanup_calls.append(allow_privileged) or False,
+    )
+
+    assert manager.list_sessions() == []
+    assert cleanup_calls == [False]

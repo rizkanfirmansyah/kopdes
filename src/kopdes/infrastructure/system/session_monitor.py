@@ -4,6 +4,8 @@ import logging
 import re
 from collections import defaultdict, deque
 from datetime import datetime, timezone
+from threading import RLock
+from time import monotonic
 
 from kopdes.application.dtos.runtime_state import ConnectionInspector, ConnectionRow, DnsStatus, InterfaceSnapshot
 from kopdes.domain.entities.connection_profile import ConnectionProfile
@@ -32,6 +34,8 @@ class SessionMonitor:
         self._interface_monitor = interface_monitor
         self._dns_monitor = dns_monitor
         self._health_monitor = health_monitor
+        self._history_lock = RLock()
+        self._last_monitor_error_at = 0.0
         self._upload_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=24))
         self._download_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=24))
 
@@ -47,10 +51,24 @@ class SessionMonitor:
         ppp_active = self._safe_collect(self._ppp_manager.list_active_connections, {})
         routes = self._safe_collect(self._route_manager.list_routes, [])
         rows: list[ConnectionRow] = []
+        active_profile_ids = {profile.id for profile in profiles}
+        assigned_interfaces: set[str] = set()
+        with self._history_lock:
+            for profile_id in set(self._upload_history) - active_profile_ids:
+                self._upload_history.pop(profile_id, None)
+                self._download_history.pop(profile_id, None)
 
         for profile in profiles:
             persisted = latest_sessions.get(profile.id)
-            interface = self._match_interface(profile, interfaces, openvpn_sessions, ppp_active)
+            interface = self._match_interface(
+                profile,
+                interfaces,
+                openvpn_sessions,
+                ppp_active,
+                assigned_interfaces,
+            )
+            if interface is not None:
+                assigned_interfaces.add(interface.name)
             session = openvpn_sessions.get(profile.name)
             runtime_status = self._resolve_runtime_status(profile, persisted, session, interface, ppp_active)
             gateway = "-"
@@ -62,8 +80,11 @@ class SessionMonitor:
 
             rx_rate = interface.rx_rate_bps if interface else 0.0
             tx_rate = interface.tx_rate_bps if interface else 0.0
-            self._upload_history[profile.id].append(tx_rate)
-            self._download_history[profile.id].append(rx_rate)
+            with self._history_lock:
+                self._upload_history[profile.id].append(tx_rate)
+                self._download_history[profile.id].append(rx_rate)
+                upload_history = list(self._upload_history[profile.id])
+                download_history = list(self._download_history[profile.id])
 
             rows.append(
                 ConnectionRow(
@@ -87,8 +108,8 @@ class SessionMonitor:
                     last_error=(persisted.last_error or "-") if persisted else "-",
                     interface_name=interface.name if interface else "-",
                     gateway=gateway,
-                    upload_history=list(self._upload_history[profile.id]),
-                    download_history=list(self._download_history[profile.id]),
+                    upload_history=upload_history,
+                    download_history=download_history,
                 )
             )
 
@@ -149,16 +170,37 @@ class SessionMonitor:
             download_history=row.download_history,
         )
 
+
+    def collect_interfaces(self) -> list[InterfaceSnapshot]:
+        return self._safe_collect(self._interface_monitor.collect, [])
+
+    def collect_routes(self):
+        return self._safe_collect(self._route_manager.list_routes, [])
+
+    def collect_rules(self):
+        return self._safe_collect(self._route_manager.list_rules, [])
+
+    def collect_dns(self) -> DnsStatus:
+        return self._safe_collect(self._dns_monitor.collect, DnsStatus())
+
+    def run_health_check(self, check_type: HealthCheckType, target: str, timeout: int = 3):
+        return self._health_monitor.run(check_type, target, timeout)
+
     def _match_interface(
         self,
         profile: ConnectionProfile,
         interfaces: list[InterfaceSnapshot],
         openvpn_sessions: dict[str, object],
         ppp_active: dict[str, dict[str, str]],
+        used_interfaces: set[str] | None = None,
     ) -> InterfaceSnapshot | None:
+        if used_interfaces is None:
+            used_interfaces = set()
         if profile.name in ppp_active:
             device = str(ppp_active[profile.name].get("device", "")).strip()
             if device and device != "-":
+                if device in used_interfaces:
+                    return None
                 return next((item for item in interfaces if item.name == device), None)
 
         session = openvpn_sessions.get(profile.name)
@@ -166,13 +208,18 @@ class SessionMonitor:
             session_interface = str(getattr(session, "interface_name", "") or "").strip()
             if session_interface:
                 exact = next((item for item in interfaces if item.name == session_interface), None)
-                if exact:
+                if exact and exact.name not in used_interfaces:
                     return exact
                 if session_interface in {"tun", "tap", "ppp"}:
                     candidates = [
                         item
                         for item in interfaces
-                        if item.name.startswith(session_interface) and item.is_up and item.ipv4
+                        if (
+                            item.name.startswith(session_interface)
+                            and item.name not in used_interfaces
+                            and item.is_up
+                            and item.ipv4
+                        )
                     ]
                     # Never assign the same anonymous tunnel to multiple sessions.
                     if len(candidates) == 1:
@@ -180,6 +227,8 @@ class SessionMonitor:
 
         explicit = str(profile.config_payload.get("interface_name", "")).strip()
         if explicit and profile.protocol != ProtocolType.OPENVPN:
+            if explicit in used_interfaces:
+                return None
             return next((item for item in interfaces if item.name == explicit), None)
         return None
 
@@ -285,5 +334,11 @@ class SessionMonitor:
         try:
             return callback()
         except Exception:
-            LOGGER.exception("Runtime monitor operation failed")
+            now = monotonic()
+            with self._history_lock:
+                should_log = now - self._last_monitor_error_at >= 30.0
+                if should_log:
+                    self._last_monitor_error_at = now
+            if should_log:
+                LOGGER.exception("Runtime monitor operation failed")
             return default() if callable(default) else default

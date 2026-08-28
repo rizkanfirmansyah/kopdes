@@ -158,3 +158,36 @@ def test_session_monitor_marks_reconnecting_when_runtime_reports_reconnect() -> 
 
     assert rows[0].status == ConnectionStatus.RECONNECTING
     assert rows[0].reconnect_count == 1
+
+
+def test_session_monitor_does_not_duplicate_telemetry_for_shared_tunnel() -> None:
+    monitor = SessionMonitor(
+        openvpn_manager=OpenVpnManagerStub(
+            [
+                OpenVpnSession(name="VPN-A", session_path="/tmp/a.json", status_text="connected", backend="openvpn", interface_name="tun0"),
+                OpenVpnSession(name="VPN-B", session_path="/tmp/b.json", status_text="connected", backend="openvpn", interface_name="tun0"),
+            ]
+        ),
+        ppp_manager=PppManagerStub(),
+        route_manager=RouteManagerStub(),
+        interface_monitor=InterfaceMonitorStub(),
+        dns_monitor=DnsMonitorStub(),
+        health_monitor=HealthMonitorStub(),
+    )
+    profiles = [
+        ConnectionProfile(id="profile-a", name="VPN-A", description="", server_address="a.example", protocol=ProtocolType.OPENVPN),
+        ConnectionProfile(id="profile-b", name="VPN-B", description="", server_address="b.example", protocol=ProtocolType.OPENVPN),
+    ]
+    sessions = {
+        "profile-a": ConnectionSession(id="session-a", profile_id="profile-a", status=ConnectionStatus.CONNECTING, started_at=datetime.now(timezone.utc)),
+        "profile-b": ConnectionSession(id="session-b", profile_id="profile-b", status=ConnectionStatus.CONNECTING, started_at=datetime.now(timezone.utc)),
+    }
+
+    rows = monitor.build_rows(profiles, sessions)
+
+    assert rows[0].interface_name == "tun0"
+    assert rows[0].status == ConnectionStatus.ACTIVE
+    assert rows[1].interface_name == "-"
+    assert rows[1].status == ConnectionStatus.DEGRADED
+    assert rows[1].rx_rate_bps == 0.0
+    assert rows[1].tx_rate_bps == 0.0

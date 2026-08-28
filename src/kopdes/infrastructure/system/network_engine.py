@@ -39,7 +39,7 @@ class OpenVpnHandler(ProtocolHandler):
         )
 
     def build_disconnect_plan(self, profile: ConnectionProfile) -> EngineActionPlan:
-        return EngineActionPlan(command=["pkill", "-f", profile.name])
+        raise RuntimeError("Unsafe OpenVPN disconnect plan disabled; use the managed OpenVpnManager session API.")
 
 
 class PppHandler(ProtocolHandler):

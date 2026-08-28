@@ -9,13 +9,24 @@ from kopdes.shared.enums import ProtocolType
 
 
 class ConfigImportParser:
+    MAX_CONFIG_BYTES = 2 * 1024 * 1024
+
     def parse(self, path: Path) -> dict[str, object]:
         suffix = path.suffix.lower()
-        raw = path.read_text(encoding="utf-8", errors="ignore")
+        try:
+            size = path.stat().st_size
+            if size > self.MAX_CONFIG_BYTES:
+                raise ValueError(
+                    f"Configuration file is too large ({size} bytes); "
+                    f"maximum is {self.MAX_CONFIG_BYTES} bytes."
+                )
+            raw = path.read_bytes().decode("utf-8", errors="replace")
+        except OSError as exc:
+            raise ValueError(f"Configuration file could not be read: {exc}") from exc
         if not raw.strip():
             raise ValueError("Configuration file is empty.")
         try:
-            if suffix in {".json"}:
+            if suffix == ".json":
                 payload = json.loads(raw)
                 return self._normalize_mapping(payload)
             if suffix in {".yaml", ".yml"}:
@@ -26,6 +37,8 @@ class ConfigImportParser:
             raise ValueError(f"Configuration file could not be parsed: {exc}") from exc
 
     def _normalize_mapping(self, payload: dict[str, object]) -> dict[str, object]:
+        if not isinstance(payload, dict):
+            raise ValueError("Structured configuration must contain an object/map at its root.")
         server_address = payload.get("server") or payload.get("server_address", "")
         protocol = str(payload.get("protocol", ProtocolType.OPENVPN.value))
         warnings: list[str] = []

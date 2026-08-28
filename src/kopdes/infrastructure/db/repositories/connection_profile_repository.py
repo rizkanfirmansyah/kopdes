@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from uuid import uuid4
 
 from sqlalchemy.orm import sessionmaker
@@ -10,6 +11,9 @@ from kopdes.domain.entities.connection_profile import ConnectionProfile
 from kopdes.infrastructure.db.models.connection_profile import ConnectionProfileModel
 from kopdes.infrastructure.db.models.tag import TagModel
 from kopdes.shared.enums import ProtocolType
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SqlAlchemyConnectionProfileRepository(ConnectionProfileRepository):
@@ -43,7 +47,7 @@ class SqlAlchemyConnectionProfileRepository(ConnectionProfileRepository):
     def list_all(self) -> list[ConnectionProfile]:
         with self._session_factory() as session:
             models = session.query(ConnectionProfileModel).order_by(ConnectionProfileModel.name).all()
-            return [self._to_entity(item) for item in models]
+            return self._safe_entities(models)
 
     def get_by_name(self, name: str) -> ConnectionProfile | None:
         with self._session_factory() as session:
@@ -52,12 +56,12 @@ class SqlAlchemyConnectionProfileRepository(ConnectionProfileRepository):
                 .filter(ConnectionProfileModel.name == name)
                 .one_or_none()
             )
-            return self._to_entity(model) if model else None
+            return self._safe_entity(model) if model else None
 
     def get_by_id(self, profile_id: str) -> ConnectionProfile | None:
         with self._session_factory() as session:
             model = session.get(ConnectionProfileModel, profile_id)
-            return self._to_entity(model) if model else None
+            return self._safe_entity(model) if model else None
 
     def delete(self, profile_id: str) -> None:
         with self._session_factory() as session:
@@ -66,6 +70,21 @@ class SqlAlchemyConnectionProfileRepository(ConnectionProfileRepository):
                 return
             session.delete(model)
             session.commit()
+
+    def _safe_entities(self, models) -> list[ConnectionProfile]:
+        entities: list[ConnectionProfile] = []
+        for model in models:
+            entity = self._safe_entity(model)
+            if entity is not None:
+                entities.append(entity)
+        return entities
+
+    def _safe_entity(self, model: ConnectionProfileModel) -> ConnectionProfile | None:
+        try:
+            return self._to_entity(model)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            LOGGER.error("Skipping malformed connection profile id=%s: %s", model.id, exc)
+            return None
 
     def _get_or_create_tag(self, session, name: str) -> TagModel:
         tag = session.query(TagModel).filter(TagModel.name == name).one_or_none()

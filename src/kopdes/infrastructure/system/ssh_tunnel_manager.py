@@ -9,7 +9,9 @@ import signal
 import socket
 import subprocess
 import time
+from functools import wraps
 from pathlib import Path
+from threading import Lock, RLock
 
 from kopdes.application.dtos.runtime_state import ActionResult, PortMappingSession
 from kopdes.domain.entities.port_mapping import PortMapping
@@ -19,11 +21,21 @@ from kopdes.infrastructure.system.command_runner import CommandRunner
 LOGGER = logging.getLogger(__name__)
 
 
+def _manager_locked(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class SshTunnelManager:
     """Own SSH local-forward processes and their durable runtime metadata."""
 
     STARTUP_TIMEOUT_SECONDS = 10.0
     STOP_TIMEOUT_SECONDS = 3.0
+    MAX_LOG_BYTES = 2 * 1024 * 1024
 
     def __init__(self, command_runner: CommandRunner, data_dir: Path) -> None:
         self._command_runner = command_runner
@@ -32,8 +44,11 @@ class SshTunnelManager:
         self._runtime_dir.mkdir(parents=True, exist_ok=True)
         self._known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
         self._processes: dict[str, subprocess.Popen] = {}
+        self._processes_guard = Lock()
+        self._lock = RLock()
         self._ensure_private_file(self._known_hosts_path)
 
+    @_manager_locked
     def start(self, mapping: PortMapping, password: str | None = None) -> ActionResult:
         validation_error = self.validate_mapping(mapping, password)
         if validation_error:
@@ -79,6 +94,7 @@ class SshTunnelManager:
         process = None
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._trim_log(log_path)
             log_handle = log_path.open("ab")
             os.chmod(log_path, 0o600)
             if password:
@@ -103,6 +119,8 @@ class SshTunnelManager:
                     close_fds=True,
                     env={**os.environ, "LC_ALL": "C"},
                 )
+            with self._processes_guard:
+                self._processes[mapping.id] = process
             if write_fd is not None:
                 secret = password.encode("utf-8") + b"\n"
                 while secret:
@@ -110,15 +128,21 @@ class SshTunnelManager:
                     secret = secret[written:]
         except FileNotFoundError as exc:
             if process is not None:
-                self._terminate_pid(process.pid)
+                if process.poll() is None:
+                    self._terminate_pid(process.pid)
+                self._forget_process(mapping.id)
             return ActionResult(False, "SSH client could not be started.", str(exc))
         except PermissionError as exc:
             if process is not None:
-                self._terminate_pid(process.pid)
+                if process.poll() is None:
+                    self._terminate_pid(process.pid)
+                self._forget_process(mapping.id)
             return ActionResult(False, "Permission denied while starting SSH mapping.", str(exc))
         except OSError as exc:
             if process is not None:
-                self._terminate_pid(process.pid)
+                if process.poll() is None:
+                    self._terminate_pid(process.pid)
+                self._forget_process(mapping.id)
             LOGGER.exception("Could not start SSH mapping %s", mapping.name)
             return ActionResult(False, "SSH port mapping could not be started.", str(exc))
         finally:
@@ -136,6 +160,7 @@ class SshTunnelManager:
             "name": mapping.name,
             "pid": process.pid,
             "pid_start_time": self._process_start_time(process.pid),
+            "started_at": time.time(),
             "local_host": mapping.local_host,
             "local_port": mapping.local_port,
             "remote_host": mapping.remote_host,
@@ -147,10 +172,13 @@ class SshTunnelManager:
         }
         try:
             self._write_metadata(mapping.id, metadata)
-            self._processes[mapping.id] = process
+            with self._processes_guard:
+                self._processes[mapping.id] = process
         except OSError as exc:
             LOGGER.exception("Could not persist SSH mapping metadata for %s", mapping.name)
-            self._terminate_pid(process.pid)
+            if process.poll() is None:
+                self._terminate_pid(process.pid)
+            self._forget_process(mapping.id)
             return ActionResult(False, "SSH mapping metadata could not be saved.", str(exc))
 
         deadline = time.monotonic() + self.STARTUP_TIMEOUT_SECONDS
@@ -158,6 +186,7 @@ class SshTunnelManager:
             return_code = process.poll()
             if return_code is not None:
                 details = self._read_log_tail(log_path)
+                self._forget_process(mapping.id)
                 self._remove_metadata(mapping.id)
                 return ActionResult(
                     False,
@@ -179,6 +208,7 @@ class SshTunnelManager:
             {"mapping_id": mapping.id, "pid": str(process.pid)},
         )
 
+    @_manager_locked
     def list_sessions(self) -> list[PortMappingSession]:
         sessions: list[PortMappingSession] = []
         for metadata_path in sorted(self._runtime_dir.glob("*.json")):
@@ -188,18 +218,25 @@ class SshTunnelManager:
             mapping_id = str(metadata.get("mapping_id", "")).strip()
             if not mapping_id:
                 continue
+            self._trim_log(self._log_path(mapping_id))
             pid = self._as_pid(metadata.get("pid"))
             if not self._pid_matches(pid, metadata):
-                self._processes.pop(mapping_id, None)
+                self._forget_process(mapping_id)
+                self._remove_metadata(mapping_id)
                 continue
-            process = self._processes.get(mapping_id)
+            process = self._get_process(mapping_id)
             if process is not None and process.poll() is not None:
-                self._processes.pop(mapping_id, None)
+                self._forget_process(mapping_id)
                 self._remove_metadata(mapping_id)
                 continue
             local_host = str(metadata.get("local_host", "127.0.0.1"))
             local_port = self._as_port(metadata.get("local_port"))
             listening = self._is_local_listener_values(local_host, local_port)
+            if not listening and self._startup_timed_out(metadata, metadata_path):
+                self._terminate_pid(pid)
+                self._forget_process(mapping_id)
+                self._remove_metadata(mapping_id)
+                continue
             sessions.append(
                 PortMappingSession(
                     mapping_id=mapping_id,
@@ -211,6 +248,7 @@ class SshTunnelManager:
             )
         return sessions
 
+    @_manager_locked
     def stop(self, mapping_id: str) -> ActionResult:
         mapping_id = str(mapping_id or "").strip()
         if not mapping_id:
@@ -229,7 +267,7 @@ class SshTunnelManager:
                 "SSH port mapping could not be stopped.",
                 f"The managed SSH process {pid} is still running or permission was denied.",
             )
-        process = self._processes.pop(mapping_id, None)
+        process = self._forget_process(mapping_id)
         if process is not None:
             try:
                 process.wait(timeout=0.5)
@@ -238,6 +276,7 @@ class SshTunnelManager:
         self._remove_metadata(mapping_id)
         return ActionResult(True, "SSH port mapping stopped.")
 
+    @_manager_locked
     def stop_all(self) -> ActionResult:
         failures: list[str] = []
         for metadata_path in sorted(self._runtime_dir.glob("*.json")):
@@ -256,9 +295,17 @@ class SshTunnelManager:
             return ActionResult(False, "Some SSH port mappings could not be stopped.", "\n".join(failures))
         return ActionResult(True, "Stopped all managed SSH port mappings.")
 
+    @_manager_locked
     def shutdown(self, mappings=None) -> ActionResult:
         del mappings
         return self.stop_all()
+
+    def request_stop_all(self) -> None:
+        """Signal only SSH processes owned by this manager; do not wait."""
+        with self._processes_guard:
+            processes = list(self._processes.values())
+        for process in processes:
+            self._request_stop_pid(process.pid)
 
     def validate_mapping(self, mapping: PortMapping, password: str | None = None) -> str | None:
         fields = {
@@ -358,44 +405,53 @@ class SshTunnelManager:
 
     def _terminate_pid(self, pid: int) -> bool:
         try:
-            os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            result = self._command_runner.run_privileged(["kill", "-TERM", str(pid)], interactive=True)
-            if result.return_code != 0:
-                return False
+            pgid = os.getpgid(pid)
         except OSError:
+            pgid = None
+
+        def send_signal(name: str, value: signal.Signals) -> bool:
             try:
-                os.kill(pid, signal.SIGTERM)
+                if pgid == pid:
+                    os.killpg(pgid, value)
+                else:
+                    os.kill(pid, value)
+                return True
             except ProcessLookupError:
                 return True
             except PermissionError:
-                result = self._command_runner.run_privileged(["kill", "-TERM", str(pid)], interactive=True)
-                if result.return_code != 0:
-                    return False
+                result = self._command_runner.run_privileged(
+                    ["kill", f"-{name}", str(pid)],
+                    interactive=True,
+                )
+                return result.return_code == 0
+            except OSError:
+                return False
 
+        if not send_signal("TERM", signal.SIGTERM):
+            return False
         deadline = time.monotonic() + self.STOP_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             if not self._pid_exists(pid):
                 return True
             time.sleep(0.1)
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            result = self._command_runner.run_privileged(["kill", "-KILL", str(pid)], interactive=True)
-            return result.return_code == 0 and not self._pid_exists(pid)
-        except OSError:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
+        if not send_signal("KILL", signal.SIGKILL):
+            return False
+        deadline = time.monotonic() + self.STOP_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if not self._pid_exists(pid):
                 return True
-            except PermissionError:
-                result = self._command_runner.run_privileged(["kill", "-KILL", str(pid)], interactive=True)
-                return result.return_code == 0 and not self._pid_exists(pid)
+            time.sleep(0.1)
         return not self._pid_exists(pid)
+
+    def _request_stop_pid(self, pid: int) -> None:
+        try:
+            pgid = os.getpgid(pid)
+            if pgid == pid:
+                os.killpg(pgid, signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
 
     def _pid_exists(self, pid: int) -> bool:
         try:
@@ -422,7 +478,7 @@ class SshTunnelManager:
         )
         expected_start = metadata.get("pid_start_time")
         actual_start = self._process_start_time(pid)
-        if expected_start and actual_start and str(expected_start) != str(actual_start):
+        if expected_start and (not actual_start or str(expected_start) != str(actual_start)):
             return False
         return (
             executable in {"ssh", "sshpass"}
@@ -450,8 +506,23 @@ class SshTunnelManager:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value))
         return safe[:120] or "mapping"
 
+    def _is_within(self, path: Path, parent: Path) -> bool:
+        try:
+            path.resolve().relative_to(parent.resolve())
+            return True
+        except (OSError, ValueError):
+            return False
+
     def _read_session_metadata(self, mapping_id: str) -> dict | None:
         return self._read_json(self._metadata_path(mapping_id))
+
+    def _get_process(self, mapping_id: str):
+        with self._processes_guard:
+            return self._processes.get(mapping_id)
+
+    def _forget_process(self, mapping_id: str):
+        with self._processes_guard:
+            return self._processes.pop(mapping_id, None)
 
     def _read_json(self, path: Path) -> dict | None:
         try:
@@ -477,10 +548,43 @@ class SshTunnelManager:
 
     def _read_log_tail(self, path: Path, limit: int = 30) -> str:
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            with path.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - self.MAX_LOG_BYTES), os.SEEK_SET)
+                lines = handle.read(self.MAX_LOG_BYTES).decode(
+                    "utf-8",
+                    errors="replace",
+                ).splitlines()
         except OSError:
             return ""
         return "\n".join(lines[-limit:])
+
+    def _trim_log(self, path: Path) -> None:
+        if not self._is_within(path, self._runtime_dir):
+            LOGGER.warning("Refusing to trim SSH log outside managed directory: %s", path)
+            return
+        try:
+            if not path.exists() or path.stat().st_size <= self.MAX_LOG_BYTES * 2:
+                return
+            with path.open("r+b") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - self.MAX_LOG_BYTES), os.SEEK_SET)
+                raw = handle.read(self.MAX_LOG_BYTES)
+                # Keep the inode stable: ssh owns an already-open append fd.
+                handle.seek(0)
+                handle.write(raw)
+                handle.truncate()
+        except OSError:
+            LOGGER.warning("Could not trim SSH log: %s", path)
+
+    def _startup_timed_out(self, metadata: dict, metadata_path: Path) -> bool:
+        try:
+            started_at = float(metadata.get("started_at", metadata_path.stat().st_mtime))
+        except (OSError, TypeError, ValueError):
+            return False
+        return time.time() - started_at >= self.STARTUP_TIMEOUT_SECONDS
 
     def _ensure_private_file(self, path: Path) -> None:
         try:

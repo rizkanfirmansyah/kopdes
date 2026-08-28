@@ -234,3 +234,183 @@ def test_control_center_service_reconnect_marks_session_as_reconnecting(tmp_path
     assert result.success is True
     assert latest.status == ConnectionStatus.RECONNECTING
     assert latest.reconnect_count == 2
+
+
+
+def test_control_center_service_reconnect_does_not_start_after_failed_disconnect(tmp_path: Path, monkeypatch) -> None:
+    service = build_service(tmp_path)
+    profile = service.save_profile(
+        ConnectionProfileInput(
+            name="Unsafe Retry",
+            description="reconnect safety test",
+            server_address="198.51.100.30",
+            protocol=ProtocolType.OPENVPN,
+        )
+    )
+    starts: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "disconnect_profile",
+        lambda profile_id: ActionResult(False, "Disconnect failed.", "process still running"),
+    )
+    monkeypatch.setattr(
+        service._openvpn_manager,
+        "start_session",
+        lambda runtime_profile, password=None: starts.append(runtime_profile.name) or ActionResult(True, "started"),
+    )
+
+    result = service.reconnect_profile(profile.id)
+    latest = service._latest_sessions_by_profile()[profile.id]
+
+    assert result.success is False
+    assert starts == []
+    assert latest.status == ConnectionStatus.FAILED
+    assert "could not be stopped" in result.message
+
+
+def test_control_center_service_promotes_runtime_connected_state(tmp_path: Path, monkeypatch) -> None:
+    service = build_service(tmp_path)
+    profile = service.save_profile(
+        ConnectionProfileInput(
+            name="Runtime State",
+            description="state reconciliation test",
+            server_address="198.51.100.40",
+            protocol=ProtocolType.OPENVPN,
+            config_payload={"openvpn_backend": "openvpn", "interface_name": "tun0"},
+        )
+    )
+    service._session_repository.save(
+        ConnectionSession(
+            id="pending-state",
+            profile_id=profile.id,
+            status=ConnectionStatus.CONNECTING,
+            started_at=datetime.now(timezone.utc),
+        )
+    )
+    monkeypatch.setattr(
+        service._session_monitor,
+        "build_rows",
+        lambda profiles, latest: [
+            ConnectionRow(
+                profile_id=profile.id,
+                status=ConnectionStatus.ACTIVE,
+                name=profile.name,
+                protocol=profile.protocol.value,
+                server=profile.server_address,
+                backend="openvpn",
+                local_ip="10.8.0.2",
+            )
+        ],
+    )
+
+    rows = service.list_connection_rows()
+    latest = service._latest_sessions_by_profile()[profile.id]
+
+    assert rows[0].status == ConnectionStatus.ACTIVE
+    assert latest.status == ConnectionStatus.ACTIVE
+
+
+def test_control_center_service_duplicate_import_does_not_touch_system_profile(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_service(tmp_path)
+    service.save_profile(
+        ConnectionProfileInput(
+            name="DUPLICATE",
+            description="existing profile",
+            server_address="vpn.example.net",
+            protocol=ProtocolType.OPENVPN,
+        )
+    )
+    source = tmp_path / "new.ovpn"
+    source.write_text("client\nremote vpn.example.net 1194\n", encoding="utf-8")
+    called = False
+
+    def should_not_import(*args, **kwargs):
+        nonlocal called
+        called = True
+        return ActionResult(True, "unexpected")
+
+    monkeypatch.setattr(service._openvpn_manager, "import_config", should_not_import)
+
+    result = service.import_ovpn(source, "DUPLICATE")
+
+    assert result.success is False
+    assert "already exists" in result.message
+    assert called is False
+    assert not (tmp_path / "openvpn" / "profiles" / "DUPLICATE.ovpn").exists()
+
+
+def test_control_center_service_rejects_connect_when_session_is_active(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = build_service(tmp_path)
+    profile = service.save_profile(
+        ConnectionProfileInput(
+            name="ACTIVE-CONNECTION",
+            description="state guard",
+            server_address="vpn.example.net",
+            protocol=ProtocolType.OPENVPN,
+        )
+    )
+    service._session_repository.save(
+        ConnectionSession(
+            id="active-session",
+            profile_id=profile.id,
+            status=ConnectionStatus.ACTIVE,
+            started_at=datetime.now(timezone.utc),
+        )
+    )
+    called = False
+
+    def should_not_start(*args, **kwargs):
+        nonlocal called
+        called = True
+        return ActionResult(True, "unexpected")
+
+    monkeypatch.setattr(service._openvpn_manager, "start_session", should_not_start)
+
+    result = service.connect_profile(profile.id)
+
+    assert result.success is False
+    assert result.message == "Connection is already active."
+    assert called is False
+
+
+def test_control_center_service_auto_recovery_is_bounded(tmp_path: Path, monkeypatch) -> None:
+    service = build_service(tmp_path)
+    profile = service.save_profile(
+        ConnectionProfileInput(
+            name="Retry Limit",
+            description="bounded recovery test",
+            server_address="vpn.example.net",
+            protocol=ProtocolType.OPENVPN,
+            auto_reconnect=True,
+        )
+    )
+    failure_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    service._session_repository.save(
+        ConnectionSession(
+            id="retry-limit-session",
+            profile_id=profile.id,
+            status=ConnectionStatus.FAILED,
+            started_at=failure_time,
+            ended_at=failure_time,
+            reconnect_count=service.MAX_AUTO_RETRIES,
+        )
+    )
+    attempted = False
+
+    def should_not_reconnect(_profile_id: str):
+        nonlocal attempted
+        attempted = True
+        return ActionResult(False, "unexpected")
+
+    monkeypatch.setattr(service, "reconnect_profile", should_not_reconnect)
+
+    result = service.recover_failed_connections()
+
+    assert result.success is True
+    assert attempted is False

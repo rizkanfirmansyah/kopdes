@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import sessionmaker
 
 from kopdes.application.ports.repositories import ConnectionSessionRepository
 from kopdes.domain.entities.connection_session import ConnectionSession
 from kopdes.infrastructure.db.models.connection_session import ConnectionSessionModel
 from kopdes.shared.enums import ConnectionStatus
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SqlAlchemyConnectionSessionRepository(ConnectionSessionRepository):
@@ -39,10 +44,19 @@ class SqlAlchemyConnectionSessionRepository(ConnectionSessionRepository):
         with self._session_factory() as session:
             rows = (
                 session.query(ConnectionSessionModel)
-                .order_by(ConnectionSessionModel.started_at.desc().nullslast())
+                .order_by(
+                    ConnectionSessionModel.started_at.desc().nullslast(),
+                    ConnectionSessionModel.id.desc(),
+                )
                 .all()
             )
-            return [self._to_entity(row) for row in rows]
+            entities: list[ConnectionSession] = []
+            for row in rows:
+                try:
+                    entities.append(self._to_entity(row))
+                except (TypeError, ValueError) as exc:
+                    LOGGER.error("Skipping malformed connection session id=%s: %s", row.id, exc)
+            return entities
 
     def _to_entity(self, model: ConnectionSessionModel) -> ConnectionSession:
         return ConnectionSession(

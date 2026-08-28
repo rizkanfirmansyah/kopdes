@@ -24,7 +24,9 @@ KOPDES can manage multiple SSH local forwards, for example:
 127.0.0.1:5433 -> localhost:5432 via boss@192.168.0.10:22
 ```
 
-Mappings are persisted in SQLite with encrypted passwords. Runtime metadata contains only the managed PID and endpoint details; password authentication uses `sshpass -d` so the password is not placed in the process argument list. SSH identity files or an SSH agent are preferred. Install `openssh-client` and `sshpass` with `install.sh`, then open the `SSH Port Mapping` tab in the bottom dock to add, edit, connect, disconnect, or delete mappings.
+Mappings are persisted in SQLite with encrypted passwords. Runtime metadata contains only the managed PID and endpoint details; password authentication uses `sshpass -d` so the password is not placed in the process argument list. SSH identity files or an SSH agent are preferred. Install `openssh-client` and `sshpass` with `install.sh`, then open the `SSH Tunnels` page in the sidebar to add, edit, connect, disconnect, or delete mappings. The bottom `Operations Console` dock is reserved for activity and terminal output.
+
+The redesigned PySide6 shell keeps profile management, connection actions, network inspection, diagnostics, and logs in separate pages. Dashboard and system operations run through a bounded worker pool, so OpenVPN, PPP, route, DNS, and SSH operations do not block the Qt event loop.
 
 ## PPP and L2TP runtime dependencies
 
@@ -63,6 +65,7 @@ python -m kopdes.main
 - [Database Schema](docs/DATABASE_SCHEMA.md)
 - [UI Wireframes](docs/UI_WIREFRAMES.md)
 - [Deployment Plan](docs/DEPLOYMENT_PLAN.md)
+- [Reliability Audit](docs/RELIABILITY_AUDIT.md)
 
 ## Testing
 

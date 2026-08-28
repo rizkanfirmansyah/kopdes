@@ -2,18 +2,31 @@ from __future__ import annotations
 
 import re
 import shutil
+from functools import wraps
+from threading import RLock
 
 from kopdes.application.dtos.runtime_state import ActionResult, OpenVpnConfig, OpenVpnSession
 from kopdes.infrastructure.system.command_runner import CommandRunner
 
 
+def _manager_locked(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class OpenVpn3Manager:
     def __init__(self, command_runner: CommandRunner) -> None:
         self._command_runner = command_runner
+        self._lock = RLock()
 
     def available(self) -> bool:
         return shutil.which("openvpn3") is not None
 
+    @_manager_locked
     def import_config(self, path: str, alias: str) -> ActionResult:
         if not self.available():
             return ActionResult(False, "openvpn3 is not installed on this system.")
@@ -39,6 +52,7 @@ class OpenVpn3Manager:
             {"config_path": config_path or alias, "alias": alias, "openvpn_backend": "openvpn3"},
         )
 
+    @_manager_locked
     def list_configs(self) -> list[OpenVpnConfig]:
         if not self.available():
             return []
@@ -66,6 +80,7 @@ class OpenVpn3Manager:
             )
         return configs
 
+    @_manager_locked
     def list_sessions(self) -> list[OpenVpnSession]:
         if not self.available():
             return []
@@ -92,6 +107,7 @@ class OpenVpn3Manager:
             )
         return sessions
 
+    @_manager_locked
     def start_session(self, config_ref: str) -> ActionResult:
         if not self.available():
             return ActionResult(False, "openvpn3 is not installed on this system.")
@@ -103,6 +119,7 @@ class OpenVpn3Manager:
             return ActionResult(False, "OpenVPN3 session start failed.", result.stderr.strip())
         return ActionResult(True, f"Started OpenVPN3 session for '{config_ref}'.", result.stdout.strip())
 
+    @_manager_locked
     def disconnect_session(self, session_path: str) -> ActionResult:
         if not self.available():
             return ActionResult(False, "openvpn3 is not installed on this system.")
@@ -114,6 +131,7 @@ class OpenVpn3Manager:
             return ActionResult(False, "OpenVPN3 disconnect failed.", result.stderr.strip())
         return ActionResult(True, "Disconnected OpenVPN3 session.", result.stdout.strip())
 
+    @_manager_locked
     def remove_config(self, config_ref: str) -> ActionResult:
         if not self.available():
             return ActionResult(False, "openvpn3 is not installed on this system.")

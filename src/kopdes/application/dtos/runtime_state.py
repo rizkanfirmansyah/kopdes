@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from kopdes.application.dtos.connection_profile_dto import DashboardStats
 from kopdes.domain.entities.connection_profile import ConnectionProfile
 from kopdes.shared.enums import ConnectionStatus
 
@@ -77,6 +78,13 @@ class DnsStatus:
 
 
 @dataclass(slots=True)
+class HealthCheckResult:
+    ok: bool
+    latency_ms: float | None
+    detail: str
+
+
+@dataclass(slots=True)
 class ConnectionRow:
     profile_id: str
     status: ConnectionStatus
@@ -99,6 +107,23 @@ class ConnectionRow:
     packet_loss: str = "-"
     upload_history: list[float] = field(default_factory=list)
     download_history: list[float] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class NetworkSnapshot:
+    interfaces: list[InterfaceSnapshot] = field(default_factory=list)
+    routes: list[RouteEntry] = field(default_factory=list)
+    rules: list[RuleEntry] = field(default_factory=list)
+    dns: DnsStatus = field(default_factory=DnsStatus)
+
+
+@dataclass(slots=True)
+class DashboardSnapshot:
+    stats: DashboardStats
+    profiles: list[ConnectionProfile] = field(default_factory=list)
+    rows: list[ConnectionRow] = field(default_factory=list)
+    logs: list[str] = field(default_factory=list)
+    port_mapping_rows: list[PortMappingRow] = field(default_factory=list)
 
 
 @dataclass(slots=True)

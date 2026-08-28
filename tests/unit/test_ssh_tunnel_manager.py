@@ -109,3 +109,22 @@ def test_validate_rejects_privileged_local_port(tmp_path: Path) -> None:
 
     assert error is not None
     assert "1024" in error
+
+
+def test_ssh_tunnel_manager_trims_runtime_log(tmp_path: Path) -> None:
+    manager = SshTunnelManager(Runner(), tmp_path)
+    manager.MAX_LOG_BYTES = 32
+    log_path = tmp_path / "ssh_tunnels" / "runtime" / "mapping-1.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_bytes(b"x" * 100)
+
+    inode = log_path.stat().st_ino
+    with log_path.open("ab") as active_writer:
+        manager._trim_log(log_path)
+        active_writer.write(b"y" * 40 + b"tail")
+        active_writer.flush()
+        manager._trim_log(log_path)
+
+    assert log_path.stat().st_size <= manager.MAX_LOG_BYTES
+    assert log_path.stat().st_ino == inode
+    assert log_path.read_bytes().endswith(b"tail")

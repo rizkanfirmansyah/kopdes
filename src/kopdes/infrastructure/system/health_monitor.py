@@ -1,18 +1,11 @@
 from __future__ import annotations
 
 import socket
-from dataclasses import dataclass
 from time import perf_counter
 
+from kopdes.application.dtos.runtime_state import HealthCheckResult
 from kopdes.infrastructure.system.command_runner import CommandRunner
 from kopdes.shared.enums import HealthCheckType
-
-
-@dataclass(slots=True)
-class HealthCheckResult:
-    ok: bool
-    latency_ms: float | None
-    detail: str
 
 
 class HealthMonitor:

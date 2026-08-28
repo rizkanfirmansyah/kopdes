@@ -81,6 +81,14 @@ class OpenVpn3ManagerStub:
         return []
 
 
+class OpenVpn3RemovalFailureStub(OpenVpn3ManagerStub):
+    def __init__(self) -> None:
+        super().__init__(available=True)
+
+    def remove_config(self, config_ref: str) -> ActionResult:
+        return ActionResult(False, "OpenVPN3 config removal failed.", "backend refused removal")
+
+
 def build_profile(config_payload: dict[str, object]) -> ConnectionProfile:
     return ConnectionProfile(
         id="profile-1",
@@ -160,3 +168,14 @@ def test_remove_profile_succeeds_for_legacy_openvpn3_profile_without_openvpn3() 
 
     assert result.success is True
     assert "openvpn3 is unavailable" in (result.details or "").lower()
+
+
+def test_remove_profile_does_not_hide_openvpn3_backend_failure() -> None:
+    classic = ClassicManagerStub()
+    manager = OpenVpnManager(classic, OpenVpn3RemovalFailureStub())
+
+    result = manager.remove_profile(build_profile({"openvpn_backend": "openvpn3"}))
+
+    assert result.success is False
+    assert result.message == "OpenVPN3 config removal failed."
+    assert classic.removed == []

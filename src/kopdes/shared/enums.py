@@ -19,6 +19,7 @@ class ProtocolType(StrEnum):
 
 
 class ConnectionStatus(StrEnum):
+    UNKNOWN = "unknown"
     INACTIVE = "inactive"
     CONNECTING = "connecting"
     RECONNECTING = "reconnecting"

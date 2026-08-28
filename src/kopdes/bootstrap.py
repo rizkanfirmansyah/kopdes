@@ -115,6 +115,7 @@ def build_application(config_path: Path | None = None) -> BootstrapContext:
         metrics_collector=SystemMetricsCollector(),
         port_mapping_repository=port_mapping_repository,
         ssh_tunnel_manager=ssh_tunnel_manager,
+        command_runner=command_runner,
     )
 
     app = QApplication.instance() or QApplication([])
@@ -123,6 +124,8 @@ def build_application(config_path: Path | None = None) -> BootstrapContext:
         control_center_service=control_center_service,
         terminal_panel=terminal_panel,
         refresh_interval_ms=settings.refresh_interval_ms,
+        data_dir=settings.data_dir,
+        database_url=settings.database_url,
     )
     return BootstrapContext(app=app, window=window)
 

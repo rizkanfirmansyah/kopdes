@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import sessionmaker
 
 from kopdes.application.ports.repositories import PortMappingRepository
 from kopdes.domain.entities.port_mapping import PortMapping
 from kopdes.infrastructure.db.models.port_mapping import PortMappingModel
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SqlAlchemyPortMappingRepository(PortMappingRepository):
@@ -42,17 +47,35 @@ class SqlAlchemyPortMappingRepository(PortMappingRepository):
     def list_all(self) -> list[PortMapping]:
         with self._session_factory() as session:
             models = session.query(PortMappingModel).order_by(PortMappingModel.name).all()
-            return [self._to_entity(item) for item in models]
+            entities: list[PortMapping] = []
+            for model in models:
+                try:
+                    entities.append(self._to_entity(model))
+                except (TypeError, ValueError) as exc:
+                    LOGGER.error("Skipping malformed SSH mapping id=%s: %s", model.id, exc)
+            return entities
 
     def get_by_id(self, mapping_id: str) -> PortMapping | None:
         with self._session_factory() as session:
             model = session.get(PortMappingModel, mapping_id)
-            return self._to_entity(model) if model else None
+            if model is None:
+                return None
+            try:
+                return self._to_entity(model)
+            except (TypeError, ValueError) as exc:
+                LOGGER.error("Malformed SSH mapping id=%s: %s", model.id, exc)
+                return None
 
     def get_by_name(self, name: str) -> PortMapping | None:
         with self._session_factory() as session:
             model = session.query(PortMappingModel).filter(PortMappingModel.name == name).one_or_none()
-            return self._to_entity(model) if model else None
+            if model is None:
+                return None
+            try:
+                return self._to_entity(model)
+            except (TypeError, ValueError) as exc:
+                LOGGER.error("Malformed SSH mapping id=%s: %s", model.id, exc)
+                return None
 
     def delete(self, mapping_id: str) -> None:
         with self._session_factory() as session:

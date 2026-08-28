@@ -8,7 +8,9 @@ import shutil
 import time
 from collections.abc import Iterable
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
+from threading import RLock
 
 from kopdes.application.dtos.runtime_state import ActionResult, OpenVpnConfig, OpenVpnSession
 from kopdes.domain.entities.connection_profile import ConnectionProfile
@@ -18,7 +20,19 @@ from kopdes.infrastructure.system.command_runner import CommandRunner, CommandRe
 LOGGER = logging.getLogger(__name__)
 
 
+def _manager_locked(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class ClassicOpenVpnManager:
+    MAX_LOG_BYTES = 2 * 1024 * 1024
+    MAX_LOG_LINES = 2000
+
     def __init__(self, command_runner: CommandRunner, data_dir: Path) -> None:
         self._command_runner = command_runner
         self._base_dir = data_dir / "openvpn"
@@ -26,10 +40,12 @@ class ClassicOpenVpnManager:
         self._runtime_dir = self._base_dir / "runtime"
         self._profiles_dir.mkdir(parents=True, exist_ok=True)
         self._runtime_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = RLock()
 
     def available(self) -> bool:
         return shutil.which("openvpn") is not None
 
+    @_manager_locked
     def import_config(self, path: str, alias: str) -> ActionResult:
         if not self.available():
             return ActionResult(False, "openvpn command is not installed on this system.")
@@ -62,6 +78,7 @@ class ClassicOpenVpnManager:
     def managed_config_path(self, alias: str) -> Path:
         return self._profiles_dir / f"{self._slug(alias)}.ovpn"
 
+    @_manager_locked
     def create_manual_config(self, profile: ConnectionProfile) -> ActionResult:
         """Create a credential-free config for a manually entered OpenVPN profile."""
         if not profile.server_address.strip():
@@ -107,6 +124,7 @@ class ClassicOpenVpnManager:
             {"config_path": str(destination)},
         )
 
+    @_manager_locked
     def list_configs(self) -> list[OpenVpnConfig]:
         configs: list[OpenVpnConfig] = []
         for path in sorted(self._profiles_dir.glob("*.ovpn")):
@@ -124,6 +142,7 @@ class ClassicOpenVpnManager:
             )
         return configs
 
+    @_manager_locked
     def list_sessions(self) -> list[OpenVpnSession]:
         sessions: list[OpenVpnSession] = []
         for meta_path in sorted(self._runtime_dir.glob("*.json")):
@@ -134,13 +153,19 @@ class ClassicOpenVpnManager:
             if not isinstance(payload, dict):
                 continue
             pid = self._resolve_pid(payload)
-            if pid <= 0 or not self._pid_running(pid):
+            if pid <= 0 or not self._pid_running(pid, payload):
+                # Polling must never trigger a privilege prompt. Explicit stop
+                # and shutdown paths perform privileged cleanup when needed.
+                self._cleanup_runtime_files(payload, meta_path, allow_privileged=False)
                 continue
-            payload["pid"] = pid
-            try:
-                meta_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            except OSError:
-                pass
+            if str(payload.get("pid", "")) != str(pid):
+                payload["pid"] = pid
+                payload["pid_start_time"] = self._process_start_time(pid)
+                try:
+                    self._write_metadata(meta_path, payload)
+                except OSError:
+                    LOGGER.warning("Could not refresh OpenVPN runtime metadata: %s", meta_path)
+            self._trim_log_file(payload)
             sessions.append(
                 OpenVpnSession(
                     name=str(payload.get("name", meta_path.stem)),
@@ -154,6 +179,7 @@ class ClassicOpenVpnManager:
             )
         return sessions
 
+    @_manager_locked
     def start_session(
         self,
         config_path: str,
@@ -221,15 +247,18 @@ class ClassicOpenVpnManager:
             return ActionResult(False, "OpenVPN session start failed.", self._result_detail(result))
         pid = self._wait_for_pid(pid_path)
         if pid is None:
+            pid = self._find_managed_pid(str(config), safe_alias)
+        if pid is None:
             return ActionResult(
                 False,
                 "OpenVPN did not publish a PID file.",
-                "The process was not registered by KOPDES and may need to be checked in the runtime log.",
+                "KOPDES could not safely identify the started process; inspect the runtime log before retrying.",
             )
         metadata = {
             "name": alias,
             "config_path": str(config),
             "pid": pid,
+            "pid_start_time": self._process_start_time(pid),
             "pid_path": str(pid_path),
             "log_path": str(log_path),
             "status_path": str(status_path),
@@ -237,11 +266,10 @@ class ClassicOpenVpnManager:
             "auth_path": str(auth_path) if auth_path and auth_path.parent == self._runtime_dir else "",
         }
         try:
-            meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-            os.chmod(meta_path, 0o600)
+            self._write_metadata(meta_path, metadata)
         except OSError as exc:
             LOGGER.exception("Could not persist OpenVPN runtime metadata")
-            self._stop_pid(pid)
+            self._stop_pid(pid, metadata)
             self._cleanup_runtime_files(metadata, meta_path)
             return ActionResult(False, "Could not register the OpenVPN session.", str(exc))
         self._fix_runtime_permissions([pid_path, log_path, status_path], attempts=30, interval=0.2)
@@ -252,6 +280,7 @@ class ClassicOpenVpnManager:
             {"session_path": str(meta_path)},
         )
 
+    @_manager_locked
     def disconnect_session(self, session_path: str) -> ActionResult:
         meta_path = Path(session_path).expanduser()
         if not self._is_within(meta_path, self._runtime_dir) or meta_path.suffix != ".json":
@@ -265,7 +294,7 @@ class ClassicOpenVpnManager:
         if not isinstance(payload, dict):
             return ActionResult(False, "OpenVPN session metadata is invalid.")
         pid = self._resolve_pid(payload)
-        if pid <= 0 or not self._pid_running(pid):
+        if pid <= 0 or not self._pid_running(pid, payload):
             cleaned = self._cleanup_runtime_files(payload, meta_path)
             return ActionResult(
                 True,
@@ -274,19 +303,20 @@ class ClassicOpenVpnManager:
             )
         privileged_run = self._privileged_runner()
         result = privileged_run(["kill", str(pid)], timeout=20, interactive=True)
-        if result.return_code != 0 and self._pid_running(pid):
+        if result.return_code != 0 and self._pid_running(pid, payload):
             return ActionResult(False, "OpenVPN disconnect failed.", self._result_detail(result))
-        if not self._wait_for_exit(pid):
+        if not self._wait_for_exit(pid, payload=payload):
             # A real process gets one hard-stop attempt; a vanished PID is already stopped.
             if Path(f"/proc/{pid}").exists():
                 privileged_run(["kill", "-KILL", str(pid)], timeout=20, interactive=True)
-                if self._pid_running(pid):
+                if self._pid_running(pid, payload):
                     return ActionResult(False, "OpenVPN process did not stop.", f"PID {pid} is still running.")
         cleaned = self._cleanup_runtime_files(payload, meta_path)
         if not cleaned:
             return ActionResult(True, "Disconnected OpenVPN session.", "Runtime process stopped; some files need cleanup privileges.")
         return ActionResult(True, "Disconnected OpenVPN session.")
 
+    @_manager_locked
     def stop_all_sessions(self) -> ActionResult:
         """Stop live classic sessions and clean stale metadata owned by KOPDES."""
         failures: list[str] = []
@@ -299,7 +329,7 @@ class ClassicOpenVpnManager:
             if not isinstance(payload, dict):
                 continue
             pid = self._resolve_pid(payload)
-            if pid > 0 and self._pid_running(pid):
+            if pid > 0 and self._pid_running(pid, payload):
                 result = self.disconnect_session(str(meta_path))
                 if not result.success:
                     failures.append(f"{payload.get('name', meta_path.stem)}: {result.message}")
@@ -311,6 +341,7 @@ class ClassicOpenVpnManager:
             return ActionResult(False, "Some OpenVPN sessions could not be stopped.", "\n".join(failures))
         return ActionResult(True, f"Stopped {stopped} managed OpenVPN session(s).")
 
+    @_manager_locked
     def remove_config(self, config_ref: str) -> ActionResult:
         config_path = Path(config_ref).expanduser()
         if not config_path.exists():
@@ -337,12 +368,14 @@ class ClassicOpenVpnManager:
             return ActionResult(False, "Could not delete the stored OpenVPN profile.", str(exc))
         return ActionResult(True, f"Deleted OpenVPN profile '{config_path.stem}'.")
 
+    @_manager_locked
     def session_path_for_alias(self, alias: str) -> str | None:
         for session in self.list_sessions():
             if session.name == alias:
                 return session.session_path
         return None
 
+    @_manager_locked
     def read_runtime_logs(self, alias: str, limit: int = 200) -> list[str]:
         log_path = self._runtime_log_path(alias)
         if log_path is None or not log_path.exists():
@@ -351,11 +384,20 @@ class ClassicOpenVpnManager:
         if raw is None:
             return []
         lines = raw.splitlines()
-        if limit <= 0:
-            return lines
-        return lines[-limit:]
+        try:
+            requested = int(limit)
+        except (TypeError, ValueError):
+            requested = 200
+        requested = self.MAX_LOG_LINES if requested <= 0 else min(requested, self.MAX_LOG_LINES)
+        return lines[-requested:]
 
-    def _cleanup_runtime_files(self, payload: dict[str, object], meta_path: Path) -> bool:
+    def _cleanup_runtime_files(
+        self,
+        payload: dict[str, object],
+        meta_path: Path,
+        allow_privileged: bool = True,
+    ) -> bool:
+        self._trim_log_file(payload)
         cleaned = True
         for key in ["pid_path", "status_path", "auth_path"]:
             value = str(payload.get(key, "")).strip()
@@ -366,9 +408,9 @@ class ClassicOpenVpnManager:
                 LOGGER.warning("Refusing to clean runtime path outside managed directory: %s", path)
                 cleaned = False
                 continue
-            cleaned = self._unlink_runtime_path(path) and cleaned
+            cleaned = self._unlink_runtime_path(path, allow_privileged) and cleaned
         if self._is_within(meta_path, self._runtime_dir):
-            cleaned = self._unlink_runtime_path(meta_path) and cleaned
+            cleaned = self._unlink_runtime_path(meta_path, allow_privileged) and cleaned
         return cleaned
 
     def _read_status_text(self, payload: dict[str, object]) -> str:
@@ -404,28 +446,50 @@ class ClassicOpenVpnManager:
             return match.group(1)
         return configured or None
 
-    def _pid_running(self, pid: int) -> bool:
+    def _pid_running(self, pid: int, payload: dict[str, object] | None = None) -> bool:
+        permission_denied = False
         try:
             os.kill(pid, 0)
         except PermissionError:
-            return self._pid_looks_like_openvpn(pid)
+            permission_denied = True
         except OSError:
+            return False
+        if payload:
+            expected_start = str(payload.get("pid_start_time", "")).strip()
+            if expected_start:
+                actual_start = self._process_start_time(pid)
+                if not actual_start or actual_start != expected_start:
+                    return False
+            elif permission_denied:
+                # A legacy record without a start time cannot safely identify
+                # a root-owned PID when signal probing is denied.
+                return False
+        elif permission_denied:
             return False
         return self._pid_looks_like_openvpn(pid)
 
-    def _wait_for_exit(self, pid: int, attempts: int = 20, interval: float = 0.1) -> bool:
+    def _wait_for_exit(
+        self,
+        pid: int,
+        attempts: int = 20,
+        interval: float = 0.1,
+        payload: dict[str, object] | None = None,
+    ) -> bool:
         for _ in range(attempts):
-            if not self._pid_running(pid):
+            if not self._pid_running(pid, payload):
                 return True
             time.sleep(interval)
-        return not self._pid_running(pid)
+        return not self._pid_running(pid, payload)
 
-    def _stop_pid(self, pid: int) -> None:
-        if pid <= 0 or not self._pid_running(pid):
+    def _stop_pid(self, pid: int, payload: dict[str, object] | None = None) -> None:
+        if pid <= 0 or not self._pid_running(pid, payload):
             return
-        result = self._privileged_runner()(["kill", str(pid)], timeout=20, interactive=True)
-        if result.return_code == 0:
-            self._wait_for_exit(pid)
+        privileged_run = self._privileged_runner()
+        result = privileged_run(["kill", str(pid)], timeout=20, interactive=True)
+        if result.return_code != 0 or self._wait_for_exit(pid, payload=payload):
+            return
+        privileged_run(["kill", "-KILL", str(pid)], timeout=20, interactive=True)
+        self._wait_for_exit(pid, payload=payload)
 
     def _prepare_runtime_files(self, *paths: Path) -> ActionResult:
         for path in paths:
@@ -444,11 +508,13 @@ class ClassicOpenVpnManager:
                 self._fix_runtime_permissions([path])
         return ActionResult(True, "Runtime files prepared.")
 
-    def _unlink_runtime_path(self, path: Path) -> bool:
+    def _unlink_runtime_path(self, path: Path, allow_privileged: bool = True) -> bool:
         try:
             path.unlink(missing_ok=True)
             return True
         except OSError:
+            if not allow_privileged:
+                return False
             result = self._privileged_runner()(["rm", "-f", str(path)], timeout=20, interactive=True)
             return result.return_code == 0 or not path.exists()
 
@@ -470,7 +536,7 @@ class ClassicOpenVpnManager:
 
     def _read_config_metadata(self, path: Path, source_dir: Path | None = None) -> dict[str, object]:
         metadata: dict[str, object] = {}
-        raw = path.read_text(encoding="utf-8", errors="ignore")
+        raw = self._safe_read_text(path) or ""
         for line in raw.splitlines():
             stripped = line.strip()
             if stripped.startswith("dev "):
@@ -534,16 +600,77 @@ class ClassicOpenVpnManager:
 
     def _safe_read_text(self, path: Path) -> str | None:
         try:
-            return path.read_text(encoding="utf-8", errors="ignore")
+            with path.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - self.MAX_LOG_BYTES), os.SEEK_SET)
+                raw = handle.read(self.MAX_LOG_BYTES)
+            return raw.decode("utf-8", errors="replace")
         except OSError:
             return None
+
+    def _trim_log_file(self, payload: dict[str, object]) -> None:
+        log_value = str(payload.get("log_path", "")).strip()
+        if not log_value:
+            return
+        path = Path(log_value).expanduser()
+        if not self._is_within(path, self._runtime_dir):
+            LOGGER.warning("Refusing to trim OpenVPN log outside managed directory: %s", path)
+            return
+        try:
+            if path.stat().st_size <= self.MAX_LOG_BYTES * 2:
+                return
+            with path.open("r+b") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - self.MAX_LOG_BYTES), os.SEEK_SET)
+                raw = handle.read(self.MAX_LOG_BYTES)
+                # Keep the inode stable: OpenVPN may still append through an fd
+                # opened before this maintenance pass.
+                handle.seek(0)
+                handle.write(raw)
+                handle.truncate()
+        except OSError:
+            LOGGER.warning("Could not trim OpenVPN log: %s", path)
+
+    def _write_metadata(self, path: Path, payload: dict[str, object]) -> None:
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+
+    def _process_start_time(self, pid: int) -> str | None:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            remainder = stat[stat.rfind(")") + 2 :].split()
+            return remainder[19] if len(remainder) > 19 else None
+        except (OSError, IndexError):
+            return None
+
+    def _find_managed_pid(self, config_path: str, safe_alias: str) -> int | None:
+        expected_daemon = f"kopdes-{safe_alias}"
+        for proc_path in Path("/proc").glob("[0-9]*"):
+            try:
+                pid = int(proc_path.name)
+                raw = (proc_path / "cmdline").read_bytes()
+                command = raw.replace(b"\x00", b" ").decode(errors="replace")
+            except (OSError, ValueError):
+                continue
+            if (
+                "openvpn" in Path(command.split(" ", 1)[0]).name
+                and config_path in command
+                and expected_daemon in command
+            ):
+                return pid
+        return None
 
     def _pid_looks_like_openvpn(self, pid: int) -> bool:
         cmdline_path = Path(f"/proc/{pid}/cmdline")
         try:
             raw = cmdline_path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
-            return True
+            return False
         normalized = raw.replace("\x00", " ").lower()
         return "openvpn" in normalized
 

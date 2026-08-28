@@ -18,6 +18,40 @@ The project uses Clean Architecture with explicit boundaries:
 
 ## 3. Runtime components
 
+### Implemented desktop flow
+
+The current PySide6 shell keeps the UI independent from Linux commands:
+
+    MainWindow / pages
+            |
+    OperationController (bounded QThreadPool)
+            |
+    ControlCenterService (application use cases and DTO snapshots)
+            |
+    OpenVpnManager | PppManager | SshTunnelManager | RouteManager
+            |
+    CommandRunner / filesystem / NetworkManager / Linux processes
+
+MainWindow owns navigation, dialogs, optimistic transition badges, and user-facing errors. pages.py owns presentation only. Dashboard, network, inspector, CRUD, diagnostics, and shutdown calls are submitted as keyed background operations; duplicate keys are rejected while an operation is running.
+
+The dashboard uses one DashboardSnapshot for profile rows, traffic histories, activity logs, and SSH mapping rows. NetworkSnapshot separately carries interfaces, routes, policy rules, and DNS. Table models update existing rows incrementally when identity is unchanged, avoiding a full view rebuild on each poll.
+
+### Source map
+
+- src/kopdes/main.py: process entry point and Qt event loop.
+- src/kopdes/bootstrap.py: dependency composition root; no UI command construction.
+- src/kopdes/ui/views/main_window.py: shell, navigation, worker orchestration, and close lifecycle.
+- src/kopdes/ui/pages.py: Overview, Connections, SSH Tunnels, Profiles, Network, Logs, Diagnostics, and Settings pages.
+- src/kopdes/ui/operation_controller.py: bounded asynchronous service executor.
+- src/kopdes/application/services/control_center_service.py: application contract consumed by the UI.
+- src/kopdes/infrastructure/system/: Linux protocol, process, route, DNS, health, and telemetry adapters.
+- src/kopdes/infrastructure/db/: SQLAlchemy models, repositories, and session factory.
+
+### Lifecycle contract
+
+At startup, Qt renders first and telemetry is scheduled asynchronously. Refresh timers use keyed operations and cannot stack duplicate dashboard, network, or inspector jobs. On close, timers and terminal submission stop, pending work is cleared, and ControlCenterService.shutdown() runs in a worker with a bounded 15-second UI wait. Cleanup is limited to KOPDES-owned runtime metadata and process records.
+
+
 ### Desktop shell
 
 - Starts the Qt application

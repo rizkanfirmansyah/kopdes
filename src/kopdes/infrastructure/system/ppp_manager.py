@@ -4,6 +4,8 @@ import logging
 import re
 import shutil
 from collections.abc import Iterable
+from functools import wraps
+from threading import RLock
 
 from kopdes.application.dtos.runtime_state import ActionResult
 from kopdes.domain.entities.connection_profile import ConnectionProfile
@@ -20,11 +22,21 @@ _MANAGED_PROTOCOLS = {
     ProtocolType.L2TP_IPSEC,
 }
 
+def _manager_locked(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
 
 class PppManager:
     def __init__(self, command_runner: CommandRunner) -> None:
         self._command_runner = command_runner
+        self._lock = RLock()
 
+    @_manager_locked
     def list_active_connections(self) -> dict[str, dict[str, str]]:
         if shutil.which("nmcli") is None:
             return {}
@@ -42,6 +54,7 @@ class PppManager:
             active[parts[0]] = {"type": parts[1], "device": parts[2]}
         return active
 
+    @_manager_locked
     def connect(self, profile: ConnectionProfile, password: str | None) -> ActionResult:
         if profile.protocol == ProtocolType.PPP:
             return self._connect_generic_ppp(profile, password)
@@ -51,6 +64,7 @@ class PppManager:
             return ActionResult(False, "nmcli is not installed on this system.")
         return self._connect_nmcli(profile, password)
 
+    @_manager_locked
     def disconnect(self, profile: ConnectionProfile) -> ActionResult:
         if profile.protocol == ProtocolType.PPP:
             peer = self._peer_name(profile)
@@ -69,6 +83,7 @@ class PppManager:
             return ActionResult(False, "Connection disconnect failed.", self._result_detail(result))
         return ActionResult(True, f"Disconnected '{profile.name}'.", self._result_detail(result))
 
+    @_manager_locked
     def delete(self, profile: ConnectionProfile) -> ActionResult:
         if profile.protocol == ProtocolType.PPP:
             return ActionResult(
@@ -90,6 +105,7 @@ class PppManager:
             return ActionResult(False, "Failed to delete nmcli connection.", self._result_detail(result))
         return ActionResult(True, f"Deleted system connection '{profile.name}'.", self._result_detail(result))
 
+    @_manager_locked
     def shutdown(self, profiles: Iterable[ConnectionProfile]) -> ActionResult:
         """Stop only PPP/NM connections owned by profiles stored in KOPDES."""
         active = self.list_active_connections()

@@ -17,6 +17,13 @@ class PortMappingTableModel(QAbstractTableModel):
         self._rows: list[PortMappingRow] = []
 
     def set_rows(self, rows: list[PortMappingRow]) -> None:
+        previous_ids = [row.mapping_id for row in self._rows]
+        current_ids = [row.mapping_id for row in rows]
+        if previous_ids == current_ids:
+            self._rows = rows
+            if rows:
+                self.dataChanged.emit(self.index(0, 0), self.index(len(rows) - 1, len(self.HEADERS) - 1), [])
+            return
         self.beginResetModel()
         self._rows = rows
         self.endResetModel()
@@ -55,6 +62,12 @@ class PortMappingTableModel(QAbstractTableModel):
                 ConnectionStatus.RECONNECTING: "#7aa2ff",
             }
             return QColor(colors.get(row.status, "#9ab2c7"))
+        return None
+
+    def status_for(self, mapping_id: str) -> ConnectionStatus | None:
+        for row in self._rows:
+            if row.mapping_id == mapping_id:
+                return row.status
         return None
 
     def headerData(self, section: int, orientation, role: int = Qt.ItemDataRole.DisplayRole):

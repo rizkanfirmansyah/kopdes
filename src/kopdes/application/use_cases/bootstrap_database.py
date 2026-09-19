@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from kopdes.infrastructure.db.base import Base
+from kopdes.infrastructure.db.migrations import migrate_database
 from kopdes.infrastructure.db.session import create_engine
 
 # Import every model here so database creation does not depend on unrelated
@@ -17,6 +17,6 @@ from kopdes.infrastructure.db.models import tag as _tag
 def bootstrap_database(database_url: str) -> None:
     engine = create_engine(database_url)
     try:
-        Base.metadata.create_all(engine)
+        migrate_database(engine, database_url=database_url)
     finally:
         engine.dispose()

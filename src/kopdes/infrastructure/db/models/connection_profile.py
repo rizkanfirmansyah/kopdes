@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from kopdes.infrastructure.db.base import Base
+from kopdes.infrastructure.db.base import Base, utcnow
 
 
 class ConnectionProfileModel(Base):
@@ -26,11 +26,11 @@ class ConnectionProfileModel(Base):
     auto_reconnect: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_multiple: Mapped[bool] = mapped_column(Boolean, default=False)
     config_payload: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=utcnow,
+        onupdate=utcnow,
     )
 
     tags: Mapped[list["TagModel"]] = relationship(

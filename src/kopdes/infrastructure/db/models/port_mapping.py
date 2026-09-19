@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from kopdes.infrastructure.db.base import Base
+from kopdes.infrastructure.db.base import Base, utcnow
 
 
 class PortMappingModel(Base):
@@ -28,5 +28,5 @@ class PortMappingModel(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_stopped_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

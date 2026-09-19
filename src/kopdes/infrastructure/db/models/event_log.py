@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from kopdes.infrastructure.db.base import Base
+from kopdes.infrastructure.db.base import Base, utcnow
 
 
 class EventLogModel(Base):
@@ -22,6 +22,6 @@ class EventLogModel(Base):
     event_type: Mapped[str] = mapped_column(String(64))
     message: Mapped[str] = mapped_column(Text)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
     profile: Mapped["ConnectionProfileModel"] = relationship(back_populates="events")

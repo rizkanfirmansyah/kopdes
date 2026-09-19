@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>KOPDES Connections - NetAdmin Pro</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "inverse-on-surface": "#2b3133",
+                        "on-surface-variant": "#bcc9cc",
+                        "error-container": "#93000a",
+                        "surface-dim": "#0f1416",
+                        "on-secondary-fixed": "#35003f",
+                        "on-background": "#dee3e5",
+                        "primary-fixed": "#9eefff",
+                        "secondary-container": "#86039c",
+                        "tertiary-fixed-dim": "#ffb875",
+                        "secondary-fixed": "#ffd6fe",
+                        "on-surface": "#dee3e5",
+                        "tertiary-container": "#da8a36",
+                        "primary-container": "#00acc1",
+                        "secondary": "#f9abff",
+                        "on-secondary-fixed-variant": "#7b008f",
+                        "background": "#0f1416",
+                        "primary-fixed-dim": "#55d7ed",
+                        "surface-container-highest": "#303637",
+                        "on-error-container": "#ffdad6",
+                        "tertiary-fixed": "#ffdcc0",
+                        "error": "#ffb4ab",
+                        "on-tertiary-fixed-variant": "#6b3b00",
+                        "surface-tint": "#55d7ed",
+                        "on-primary-fixed-variant": "#004e59",
+                        "on-tertiary-fixed": "#2d1600",
+                        "on-tertiary": "#4b2800",
+                        "on-secondary-container": "#f7a0ff",
+                        "on-error": "#690005",
+                        "inverse-surface": "#dee3e5",
+                        "inverse-primary": "#006876",
+                        "on-tertiary-container": "#502b00",
+                        "on-primary-container": "#003a42",
+                        "outline-variant": "#3d494b",
+                        "surface": "#0f1416",
+                        "outline": "#869396",
+                        "tertiary": "#ffb875",
+                        "secondary-fixed-dim": "#f9abff",
+                        "on-secondary": "#570066",
+                        "surface-container": "#1b2122",
+                        "surface-bright": "#343a3b",
+                        "surface-variant": "#303637",
+                        "surface-container-high": "#252b2c",
+                        "surface-container-low": "#171d1e",
+                        "on-primary-fixed": "#001f24",
+                        "primary": "#55d7ed",
+                        "on-primary": "#00363e",
+                        "surface-container-lowest": "#090f10"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "base": "4px",
+                        "md": "16px",
+                        "panel-padding": "20px",
+                        "gutter": "16px",
+                        "sm": "8px",
+                        "xs": "4px",
+                        "lg": "24px",
+                        "xl": "32px"
+                    },
+                    "fontFamily": {
+                        "headline-md": ["Inter"],
+                        "data-mono": ["JetBrains Mono"],
+                        "headline-lg": ["Inter"],
+                        "label-caps": ["Inter"],
+                        "body-md": ["Inter"],
+                        "body-lg": ["Inter"]
+                    },
+                    "fontSize": {
+                        "headline-md": ["20px", { "lineHeight": "28px", "fontWeight": "600" }],
+                        "data-mono": ["13px", { "lineHeight": "18px", "letterSpacing": "-0.01em", "fontWeight": "400" }],
+                        "headline-lg": ["24px", { "lineHeight": "32px", "fontWeight": "600" }],
+                        "label-caps": ["11px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "700" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .pulse-cyan {
+            animation: pulse-cyan-anim 2s infinite;
+        }
+        @keyframes pulse-cyan-anim {
+            0% { box-shadow: 0 0 0 0 rgba(85, 215, 237, 0.4); }
+            70% { box-shadow: 0 0 0 6px rgba(85, 215, 237, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(85, 215, 237, 0); }
+        }
+        
+        /* Zebra stripping for data tables */
+        .data-table tbody tr:nth-child(odd) { background-color: #1e1e1e; }
+        .data-table tbody tr:nth-child(even) { background-color: #1a1a1a; }
+        
+        /* Terminal background */
+        .terminal-bg { background-color: #000000; }
+    </style>
+</head>
+<body class="bg-background text-on-surface font-body-md text-body-md overflow-hidden selection:bg-primary-container selection:text-on-primary-container">
+<!-- TopNavBar -->
+<header class="bg-surface-container dark:bg-surface-container w-full h-14 border-b border-outline-variant dark:border-outline-variant flex justify-between items-center px-md z-40 relative">
+<div class="flex items-center gap-md">
+<!-- Mobile Menu Toggle (hidden on md+) -->
+<button aria-label="Open menu" class="md:hidden p-sm text-on-surface hover:bg-surface-bright rounded-DEFAULT transition-colors">
+<span class="material-symbols-outlined">menu</span>
+</button>
+<div class="font-headline-md text-headline-md font-bold text-primary dark:text-primary">NetAdmin Pro</div>
+</div>
+<div class="flex-1 flex justify-center max-w-md mx-auto hidden md:flex px-md">
+<div class="relative w-full">
+<div class="absolute inset-y-0 left-0 pl-sm flex items-center pointer-events-none">
+<span class="material-symbols-outlined text-outline text-[18px]">search</span>
+</div>
+<input class="w-full bg-[#181818] border border-[#2A2A2A] rounded-DEFAULT py-sm pl-xl pr-sm text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors font-body-md text-body-md" placeholder="Search connections, IPs, or logs..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-sm">
+<button aria-label="Notifications" class="p-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-bright dark:hover:bg-surface-bright transition-colors cursor-pointer active:opacity-80 rounded-full">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+</button>
+<button aria-label="Settings" class="p-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-bright dark:hover:bg-surface-bright transition-colors cursor-pointer active:opacity-80 rounded-full">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+</button>
+<button aria-label="Terminal" class="p-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-bright dark:hover:bg-surface-bright transition-colors cursor-pointer active:opacity-80 rounded-full">
+<span class="material-symbols-outlined" data-icon="terminal">terminal</span>
+</button>
+<div class="ml-sm h-8 w-8 rounded-full bg-surface-container-high overflow-hidden border border-outline-variant flex items-center justify-center">
+<img alt="Administrator Profile" class="w-full h-full object-cover" data-alt="A macro photograph of an abstract, dark geometric server panel with subtle glowing cyan fiber optic light traces indicating network activity. The lighting is moody and technical, emphasizing the sleek, corporate minimalist aesthetic. Colors consist of deep blacks, slate greys, and a vivid cyan accent." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCq0gF0UXSgb_8cvuCnkqjkwxaiQ6l1Limmn9R5q6Np2KYdrkhVbL9bjoBRg_H7_BifGHLfau7eRp2GDIzDqw6R2SNffPC1RIgmwvZdwhpTwMj-RpFgSMgdFh72tGlGxNQ6BZ-9Qi8QchzWMByUxIwGaxsruKmaTjSLzpjPWyZKokqABWct_3STrfsti1ZK6EOOp5wn42pqqFwhxyp6BXwZzVmjHRkMd06NKAAs8NRlqPeDpuCztQkRHg"/>
+</div>
+</div>
+</header>
+<div class="flex h-[calc(100vh-56px)] w-full">
+<!-- SideNavBar (Hidden on Mobile) -->
+<nav class="hidden md:flex flex-col bg-surface-container-low border-r border-outline-variant w-64 h-full flex-shrink-0 relative z-30">
+<div class="p-panel-padding border-b border-outline-variant/50">
+<div class="flex items-center gap-sm mb-xs">
+<div class="h-10 w-10 rounded-DEFAULT bg-surface-container-high flex items-center justify-center overflow-hidden border border-outline-variant/50">
+<img alt="System Node" class="w-full h-full object-cover" data-alt="Abstract rendering of a digital network node in deep space, featuring a dark minimalist background with interconnected glowing lines. The style is strictly technical and futuristic, utilizing a palette of very dark greys and precise, thin bright cyan lines to depict connectivity. Low contrast background, high chroma accents." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDDPvF6Uk_MVok9LFKlV-3Igcp4JFSQ4_T-8vNnSKyKHIqYWaheGxAwXldSUcd3KxK8IQUTkYkdp2pfDPt7vi7Ey0YqAjSZ0vb7XQHkAv3EKuJDSeGq8tbbhb-Ki1_G0Soj4WxHA1INJGehHc5pcAcnF9-WJaeZF45IQknTGeVBIABI_kb-Vv2Q3I2Jt3IXwt2waGqtxoGTy14B-1itNNl48w-Fa83GQTbhl8v77DBYk368U_KtXr31Jg"/>
+</div>
+<div>
+<div class="font-body-md text-body-md font-bold text-on-surface">Core_Node_01</div>
+<div class="font-data-mono text-data-mono text-on-surface-variant">192.168.1.1</div>
+</div>
+</div>
+</div>
+<div class="flex-1 overflow-y-auto py-md">
+<ul class="space-y-xs px-sm">
+<li>
+<a class="flex items-center gap-sm px-md py-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-highest transition-colors rounded-DEFAULT cursor-pointer active:translate-x-1 transition-transform font-label-caps text-label-caps" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="dashboard">dashboard</span>
+<span>Dashboard</span>
+</a>
+</li>
+<li>
+<a class="flex items-center gap-sm px-md py-sm text-primary dark:text-primary border-l-2 border-primary bg-surface-container-high hover:bg-surface-container dark:hover:bg-surface-container-highest transition-colors rounded-r-DEFAULT cursor-pointer active:translate-x-1 transition-transform font-label-caps text-label-caps" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="settings_ethernet">settings_ethernet</span>
+<span>Interfaces</span>
+</a>
+</li>
+<li>
+<a class="flex items-center gap-sm px-md py-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-highest transition-colors rounded-DEFAULT cursor-pointer active:translate-x-1 transition-transform font-label-caps text-label-caps" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="alt_route">alt_route</span>
+<span>Routing</span>
+</a>
+</li>
+<li>
+<a class="flex items-center gap-sm px-md py-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-highest transition-colors rounded-DEFAULT cursor-pointer active:translate-x-1 transition-transform font-label-caps text-label-caps" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="security">security</span>
+<span>Firewall</span>
+</a>
+</li>
+<li>
+<a class="flex items-center gap-sm px-md py-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-highest transition-colors rounded-DEFAULT cursor-pointer active:translate-x-1 transition-transform font-label-caps text-label-caps" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="list_alt">list_alt</span>
+<span>Logs</span>
+</a>
+</li>
+<li>
+<a class="flex items-center gap-sm px-md py-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-highest transition-colors rounded-DEFAULT cursor-pointer active:translate-x-1 transition-transform font-label-caps text-label-caps" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="terminal">terminal</span>
+<span>Terminal</span>
+</a>
+</li>
+</ul>
+</div>
+<div class="p-panel-padding border-t border-outline-variant/50">
+<ul class="space-y-xs">
+<li>
+<a class="flex items-center gap-sm px-sm py-xs text-on-surface-variant hover:text-on-surface transition-colors font-label-caps text-label-caps" href="#">
+<span class="material-symbols-outlined text-[16px]" data-icon="help_outline">help_outline</span>
+<span>Support</span>
+</a>
+</li>
+<li>
+<a class="flex items-center gap-sm px-sm py-xs text-on-surface-variant hover:text-on-surface transition-colors font-label-caps text-label-caps" href="#">
+<span class="material-symbols-outlined text-[16px]" data-icon="timer">timer</span>
+<span>Uptime</span>
+</a>
+</li>
+</ul>
+</div>
+</nav>
+<!-- Main Content Area -->
+<main class="flex-1 flex flex-col min-w-0 bg-background relative overflow-hidden">
+<!-- Page Header -->
+<div class="px-lg py-md border-b border-outline-variant flex-shrink-0 flex justify-between items-end bg-[#121212]">
+<div>
+<h1 class="font-headline-lg text-headline-lg text-on-surface">KOPDES Connections</h1>
+<p class="font-body-md text-body-md text-on-surface-variant mt-xs">Active tunnels and interface monitoring.</p>
+</div>
+<div class="flex gap-sm">
+<button class="bg-transparent border border-[#2A2A2A] text-on-surface/87 px-md py-xs rounded-DEFAULT font-label-caps text-label-caps hover:bg-surface-container-high transition-colors flex items-center gap-xs">
+<span class="material-symbols-outlined text-[16px]">refresh</span>
+                        REFRESH
+                    </button>
+<button class="bg-primary-container text-[#121212] px-md py-xs rounded-DEFAULT font-label-caps text-label-caps hover:bg-primary-fixed-dim transition-colors flex items-center gap-xs">
+<span class="material-symbols-outlined text-[16px]">add</span>
+                        NEW CONNECTION
+                    </button>
+</div>
+</div>
+<!-- Dashboard Grid Area -->
+<div class="flex-1 flex min-h-0 relative">
+<!-- Connections Table Panel -->
+<div class="flex-1 overflow-y-auto p-panel-padding bg-[#121212]" id="main-table-container">
+<div class="bg-[#1E1E1E] rounded-lg border border-outline-variant overflow-hidden">
+<table class="w-full text-left border-collapse data-table">
+<thead>
+<tr class="border-b border-outline-variant bg-[#171d1e] font-label-caps text-label-caps text-on-surface-variant uppercase">
+<th class="px-md py-sm font-medium w-12 text-center">Status</th>
+<th class="px-md py-sm font-medium">Name</th>
+<th class="px-md py-sm font-medium">Protocol</th>
+<th class="px-md py-sm font-medium">Server</th>
+<th class="px-md py-sm font-medium">Tunnel IP</th>
+<th class="px-md py-sm font-medium text-right">Uptime</th>
+<th class="px-md py-sm font-medium w-24"></th>
+</tr>
+</thead>
+<tbody class="font-body-md text-body-md text-on-surface cursor-pointer">
+<!-- Row: Connected -->
+<tr class="border-l-2 border-transparent hover:border-primary hover:bg-surface-container-highest transition-colors h-[48px]" onclick="toggleInspector(true)">
+<td class="px-md py-xs text-center">
+<div class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-emerald-500/10 text-emerald-400" title="Connected">
+<span class="material-symbols-outlined text-[16px]">check_circle</span>
+</div>
+</td>
+<td class="px-md py-xs font-medium">US-EAST-CORE</td>
+<td class="px-md py-xs">
+<span class="px-2 py-1 rounded-full bg-[#1b2122] border border-[#2A2A2A] font-data-mono text-[10px] text-on-surface-variant">OpenVPN</span>
+</td>
+<td class="px-md py-xs font-data-mono text-data-mono text-on-surface-variant">us-ea-01.kopdes.net</td>
+<td class="px-md py-xs font-data-mono text-data-mono">10.8.0.2</td>
+<td class="px-md py-xs text-right font-data-mono text-data-mono">14d 02h 45m</td>
+<td class="px-md py-xs text-right">
+<button aria-label="More actions" class="text-on-surface-variant hover:text-primary transition-colors p-xs">
+<span class="material-symbols-outlined text-[20px]">more_vert</span>
+</button>
+</td>
+</tr>
+<!-- Row: Failed -->
+<tr class="border-l-2 border-transparent hover:border-primary hover:bg-surface-container-highest transition-colors h-[48px]">
+<td class="px-md py-xs text-center">
+<div class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-error/10 text-error" title="Failed">
+<span class="material-symbols-outlined text-[16px]">error</span>
+</div>
+</td>
+<td class="px-md py-xs font-medium text-on-surface-variant">EU-WEST-BACKUP</td>
+<td class="px-md py-xs">
+<span class="px-2 py-1 rounded-full bg-[#1b2122] border border-[#2A2A2A] font-data-mono text-[10px] text-on-surface-variant">IPSec/IKEv2</span>
+</td>
+<td class="px-md py-xs font-data-mono text-data-mono text-on-surface-variant">eu-we-bk.kopdes.net</td>
+<td class="px-md py-xs font-data-mono text-data-mono text-on-surface-variant">--</td>
+<td class="px-md py-xs text-right font-data-mono text-data-mono text-error">Offline</td>
+<td class="px-md py-xs text-right">
+<button aria-label="More actions" class="text-on-surface-variant hover:text-primary transition-colors p-xs">
+<span class="material-symbols-outlined text-[20px]">more_vert</span>
+</button>
+</td>
+</tr>
+<!-- Row: Connecting -->
+<tr class="border-l-2 border-primary bg-surface-container-highest transition-colors h-[48px] relative z-10 shadow-[0_0_15px_rgba(0,0,0,0.15)]" id="active-row">
+<td class="px-md py-xs text-center">
+<div class="inline-flex items-center justify-center w-3 h-3 rounded-full bg-primary pulse-cyan mx-auto" title="Connecting"></div>
+</td>
+<td class="px-md py-xs font-medium text-primary">AP-SOUTH-NODE</td>
+<td class="px-md py-xs">
+<span class="px-2 py-1 rounded-full bg-[#1b2122] border border-[#2A2A2A] font-data-mono text-[10px] text-on-surface-variant">WireGuard</span>
+</td>
+<td class="px-md py-xs font-data-mono text-data-mono text-on-surface-variant">ap-so-01.kopdes.net</td>
+<td class="px-md py-xs font-data-mono text-data-mono">10.9.2.14</td>
+<td class="px-md py-xs text-right font-data-mono text-data-mono text-primary animate-pulse">Negotiating...</td>
+<td class="px-md py-xs text-right">
+<button aria-label="More actions" class="text-on-surface-variant hover:text-primary transition-colors p-xs">
+<span class="material-symbols-outlined text-[20px]">more_vert</span>
+</button>
+</td>
+</tr>
+<!-- Row: Idle -->
+<tr class="border-l-2 border-transparent hover:border-primary hover:bg-surface-container-highest transition-colors h-[48px]">
+<td class="px-md py-xs text-center">
+<div class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-on-surface-variant/10 text-on-surface-variant" title="Idle">
+<span class="material-symbols-outlined text-[16px]">pause_circle</span>
+</div>
+</td>
+<td class="px-md py-xs font-medium text-on-surface-variant">LOCAL-TEST-ENV</td>
+<td class="px-md py-xs">
+<span class="px-2 py-1 rounded-full bg-[#1b2122] border border-[#2A2A2A] font-data-mono text-[10px] text-on-surface-variant">L2TP/IPSec</span>
+</td>
+<td class="px-md py-xs font-data-mono text-data-mono text-on-surface-variant">192.168.100.1</td>
+<td class="px-md py-xs font-data-mono text-data-mono text-on-surface-variant">--</td>
+<td class="px-md py-xs text-right font-data-mono text-data-mono text-on-surface-variant">Idle</td>
+<td class="px-md py-xs text-right">
+<button aria-label="More actions" class="text-on-surface-variant hover:text-primary transition-colors p-xs">
+<span class="material-symbols-outlined text-[20px]">more_vert</span>
+</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<!-- Connection Inspector Panel (Right Side) -->
+<aside class="w-[400px] bg-[#1E1E1E] border-l border-[#2A2A2A] flex flex-col flex-shrink-0 shadow-[-4px_0_15px_rgba(0,0,0,0.1)] transition-transform duration-300 transform translate-x-0 z-20 absolute md:relative right-0 h-full max-w-full" id="connection-inspector">
+<!-- Inspector Header -->
+<div class="px-md py-sm border-b border-[#2A2A2A] flex justify-between items-center bg-[#252525]">
+<div class="font-headline-md text-headline-md text-on-surface flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary text-[20px]">info</span>
+                            Inspector
+                        </div>
+<button aria-label="Close inspector" class="text-on-surface-variant hover:text-on-surface p-xs rounded-DEFAULT hover:bg-surface-container transition-colors md:hidden" onclick="toggleInspector(false)">
+<span class="material-symbols-outlined text-[20px]">close</span>
+</button>
+</div>
+<div class="flex-1 overflow-y-auto">
+<!-- Header Identity -->
+<div class="p-md border-b border-[#2A2A2A]">
+<div class="flex justify-between items-start mb-sm">
+<div>
+<h2 class="font-headline-lg text-headline-lg text-primary m-0">AP-SOUTH-NODE</h2>
+<div class="font-label-caps text-label-caps text-on-surface-variant mt-xs">WireGuard Interface (wg0)</div>
+</div>
+<div class="px-2 py-1 bg-primary/10 text-primary border border-primary/20 rounded-full font-label-caps text-label-caps flex items-center gap-xs">
+<div class="w-2 h-2 rounded-full bg-primary pulse-cyan"></div>
+                                     CONNECTING
+                                </div>
+</div>
+<div class="flex gap-sm mt-md">
+<button class="flex-1 bg-transparent border border-error text-error px-sm py-xs rounded-DEFAULT font-label-caps text-label-caps hover:bg-error hover:text-[#121212] transition-colors text-center">
+                                    DISCONNECT
+                                </button>
+<button class="flex-1 bg-transparent border border-[#2A2A2A] text-on-surface/87 px-sm py-xs rounded-DEFAULT font-label-caps text-label-caps hover:bg-surface-container-high transition-colors text-center">
+                                    EDIT CONFIG
+                                </button>
+</div>
+</div>
+<!-- Technical Details Grid -->
+<div class="p-md border-b border-[#2A2A2A]">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant mb-md uppercase tracking-widest">Network Configuration</h3>
+<div class="grid grid-cols-2 gap-y-md gap-x-sm">
+<div>
+<div class="font-label-caps text-label-caps text-on-surface-variant mb-xs">Local Tunnel IP</div>
+<div class="font-data-mono text-data-mono text-on-surface bg-[#181818] border border-[#2A2A2A] px-sm py-xs rounded-DEFAULT">10.9.2.14/24</div>
+</div>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface-variant mb-xs">Endpoint Gateway</div>
+<div class="font-data-mono text-data-mono text-on-surface bg-[#181818] border border-[#2A2A2A] px-sm py-xs rounded-DEFAULT">10.9.2.1</div>
+</div>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface-variant mb-xs">Primary DNS</div>
+<div class="font-data-mono text-data-mono text-on-surface bg-[#181818] border border-[#2A2A2A] px-sm py-xs rounded-DEFAULT">1.1.1.1</div>
+</div>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface-variant mb-xs">MTU</div>
+<div class="font-data-mono text-data-mono text-on-surface bg-[#181818] border border-[#2A2A2A] px-sm py-xs rounded-DEFAULT">1420</div>
+</div>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface-variant mb-xs">Tx Bytes</div>
+<div class="font-data-mono text-data-mono text-on-surface bg-[#181818] border border-[#2A2A2A] px-sm py-xs rounded-DEFAULT">1.24 MB</div>
+</div>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface-variant mb-xs">Rx Bytes</div>
+<div class="font-data-mono text-data-mono text-on-surface bg-[#181818] border border-[#2A2A2A] px-sm py-xs rounded-DEFAULT">4.89 MB</div>
+</div>
+</div>
+</div>
+<!-- Routing Table -->
+<div class="p-md border-b border-[#2A2A2A]">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant mb-md uppercase tracking-widest flex justify-between items-center">
+                                 Active Routes
+                                 <span class="material-symbols-outlined text-[16px] cursor-pointer hover:text-primary transition-colors">add_circle</span>
+</h3>
+<div class="bg-[#181818] border border-[#2A2A2A] rounded-DEFAULT overflow-hidden">
+<table class="w-full text-left font-data-mono text-data-mono text-on-surface">
+<thead class="bg-[#1a1a1a] border-b border-[#2A2A2A] text-on-surface-variant">
+<tr>
+<th class="px-sm py-xs font-normal">Destination</th>
+<th class="px-sm py-xs font-normal">Metric</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-[#2A2A2A]">
+<tr class="hover:bg-[#252525]">
+<td class="px-sm py-xs">0.0.0.0/0</td>
+<td class="px-sm py-xs text-on-surface-variant">50</td>
+</tr>
+<tr class="hover:bg-[#252525]">
+<td class="px-sm py-xs">192.168.0.0/16</td>
+<td class="px-sm py-xs text-on-surface-variant">10</td>
+</tr>
+<tr class="hover:bg-[#252525]">
+<td class="px-sm py-xs text-on-surface-variant">10.9.2.0/24</td>
+<td class="px-sm py-xs text-on-surface-variant">0</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<!-- Terminal Logs embedded -->
+<div class="p-md flex-1 flex flex-col min-h-[200px]">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant mb-sm uppercase tracking-widest flex justify-between items-center">
+                                Handshake Logs (PID: 4920)
+                                <span class="material-symbols-outlined text-[16px] cursor-pointer hover:text-on-surface transition-colors">open_in_new</span>
+</h3>
+<div class="terminal-bg rounded-DEFAULT border border-[#2A2A2A] p-sm font-data-mono text-[11px] leading-[1.4] text-on-surface-variant overflow-y-auto flex-1 flex flex-col-reverse shadow-inner">
+<div>
+<div class="text-primary">[14:22:05] wireguard: wg0: Handshake for peer 1 (ap-so-01...) did not complete after 5 seconds, retrying (try 2)</div>
+<div>[14:22:00] wireguard: wg0: Sending handshake initiation to peer 1 (203.0.113.45:51820)</div>
+<div>[14:21:59] systemd[1]: Started WireGuard via wg-quick(8) for wg0.</div>
+<div>[14:21:58] wg-quick[4920]: [#] ip link set mtu 1420 up dev wg0</div>
+<div>[14:21:58] wg-quick[4920]: [#] ip link add wg0 type wireguard</div>
+<div class="text-[#888888]">--- Log sequence initiated ---</div>
+</div>
+</div>
+</div>
+</div>
+</aside>
+</div>
+</main>
+</div>
+<script>
+        // Simple logic to demonstrate inspector visibility on mobile/desktop
+        function toggleInspector(forceShow) {
+            const inspector = document.getElementById('connection-inspector');
+            if (forceShow) {
+                inspector.classList.remove('translate-x-full');
+                inspector.classList.add('translate-x-0');
+            } else {
+                inspector.classList.add('translate-x-full');
+                inspector.classList.remove('translate-x-0');
+            }
+        }
+
+        // Initially hide on smaller screens for demo purposes if needed, 
+        // but tailwind handles the absolute/relative positioning.
+        // We'll just leave it open as it's the 'active' state requested in the prompt.
+    </script>
+</body></html>

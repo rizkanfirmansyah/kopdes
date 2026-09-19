@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from kopdes.infrastructure.system.classic_openvpn_manager import ClassicOpenVpnManager
@@ -269,3 +270,220 @@ def test_classic_openvpn_polling_does_not_request_privileged_stale_cleanup(
 
     assert manager.list_sessions() == []
     assert cleanup_calls == [False]
+
+
+def test_classic_openvpn_reports_unavailable_and_missing_source(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("kopdes.infrastructure.system.classic_openvpn_manager.shutil.which", lambda _name: None)
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+
+    assert manager.available() is False
+    assert manager.import_config(str(tmp_path / "missing.ovpn"), "missing").success is False
+
+
+def test_classic_openvpn_creates_manual_config_with_safe_defaults(tmp_path: Path) -> None:
+    from kopdes.domain.entities.connection_profile import ConnectionProfile
+    from kopdes.shared.enums import ProtocolType
+
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+    profile = ConnectionProfile(
+        id="manual-1",
+        name="Manual VPN",
+        description="",
+        server_address="vpn.example",
+        protocol=ProtocolType.OPENVPN,
+        port=443,
+        username="operator",
+        keepalive=10,
+        mtu=1400,
+        config_payload={"interface_name": "bad device", "openvpn_proto": "invalid", "auth_user_pass_required": True},
+    )
+
+    result = manager.create_manual_config(profile)
+
+    assert result.success is True
+    config = Path(result.data["config_path"]).read_text(encoding="utf-8")
+    assert "dev tun\n" in config
+    assert "proto udp\n" in config
+    assert "remote vpn.example 443\n" in config
+    assert "auth-user-pass\n" in config
+    assert "ping-restart 30\n" in config
+    assert "tun-mtu 1400\n" in config
+    assert (Path(result.data["config_path"]).stat().st_mode & 0o777) == 0o600
+
+
+def test_classic_openvpn_rejects_invalid_manual_config_input(tmp_path: Path) -> None:
+    from kopdes.domain.entities.connection_profile import ConnectionProfile
+    from kopdes.shared.enums import ProtocolType
+
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+    empty = ConnectionProfile("", "x", "", "", ProtocolType.OPENVPN)
+    newline = ConnectionProfile("", "x", "", "vpn\nexample", ProtocolType.OPENVPN)
+
+    assert manager.create_manual_config(empty).success is False
+    assert manager.create_manual_config(newline).success is False
+
+
+def test_classic_openvpn_import_resolves_relative_auth_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("kopdes.infrastructure.system.classic_openvpn_manager.shutil.which", lambda _name: "/usr/bin/openvpn")
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    auth = source_dir / "auth.txt"
+    auth.write_text("operator\nsecret\n", encoding="utf-8")
+    source = source_dir / "profile.ovpn"
+    source.write_text("client\nauth-user-pass auth.txt\n", encoding="utf-8")
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+
+    result = manager.import_config(str(source), "relative-auth")
+
+    assert result.success is True
+    assert result.data["auth_user_pass_file"] == str(auth)
+
+
+def test_classic_openvpn_start_reports_missing_config_and_credentials(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("kopdes.infrastructure.system.classic_openvpn_manager.shutil.which", lambda _name: "/usr/bin/openvpn")
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+
+    assert manager.start_session(str(tmp_path / "missing.ovpn"), "missing").success is False
+    config = tmp_path / "profile.ovpn"
+    config.write_text("client\n", encoding="utf-8")
+    missing_creds = manager.start_session(
+        str(config),
+        "needs-auth",
+        username=None,
+        password=None,
+        auth_user_pass_required=True,
+    )
+    missing_file = manager.start_session(
+        str(config),
+        "missing-file",
+        auth_user_pass_file=str(tmp_path / "no-auth"),
+    )
+
+    assert "requires username" in missing_creds.message
+    assert "credentials file" in missing_file.message
+
+
+def test_classic_openvpn_start_failure_removes_runtime_auth(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("kopdes.infrastructure.system.classic_openvpn_manager.shutil.which", lambda _name: "/usr/bin/openvpn")
+    manager = ClassicOpenVpnManager(FakeRunner(return_code=1, stderr="auth failed"), tmp_path)
+    config = tmp_path / "profile.ovpn"
+    config.write_text("client\n", encoding="utf-8")
+
+    result = manager.start_session(
+        str(config),
+        "failed",
+        username="operator",
+        password="secret",
+        auth_user_pass_required=True,
+    )
+
+    assert result.success is False
+    assert not (tmp_path / "openvpn" / "runtime" / "failed.auth").exists()
+
+
+def test_classic_openvpn_start_rejects_duplicate_session(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("kopdes.infrastructure.system.classic_openvpn_manager.shutil.which", lambda _name: "/usr/bin/openvpn")
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+    config = tmp_path / "profile.ovpn"
+    config.write_text("client\n", encoding="utf-8")
+    monkeypatch.setattr(manager, "session_path_for_alias", lambda _alias: "/owned/session.json")
+
+    result = manager.start_session(str(config), "duplicate")
+
+    assert result.success is False
+    assert "already connected" in result.message
+
+
+def test_classic_openvpn_start_fails_if_pid_is_not_published(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("kopdes.infrastructure.system.classic_openvpn_manager.shutil.which", lambda _name: "/usr/bin/openvpn")
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+    config = tmp_path / "profile.ovpn"
+    config.write_text("client\n", encoding="utf-8")
+    monkeypatch.setattr(manager, "_wait_for_pid", lambda _path: None)
+    monkeypatch.setattr(manager, "_find_managed_pid", lambda _config, _alias: None)
+
+    result = manager.start_session(str(config), "no-pid")
+
+    assert result.success is False
+    assert "did not publish" in result.message
+
+
+def test_classic_openvpn_disconnect_validates_path_and_metadata(tmp_path: Path) -> None:
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+    outside = tmp_path.parent / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    malformed = tmp_path / "openvpn" / "runtime" / "malformed.json"
+    malformed.write_text("{bad", encoding="utf-8")
+    scalar = tmp_path / "openvpn" / "runtime" / "scalar.json"
+    scalar.write_text("[]", encoding="utf-8")
+
+    assert manager.disconnect_session(str(outside)).success is False
+    assert manager.disconnect_session(str(malformed)).success is False
+    assert manager.disconnect_session(str(scalar)).success is False
+
+
+def test_classic_openvpn_disconnect_cleans_stale_session(tmp_path: Path, monkeypatch) -> None:
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+    runtime = tmp_path / "openvpn" / "runtime"
+    meta = runtime / "stale.json"
+    log = runtime / "stale.log"
+    status = runtime / "stale.status"
+    pid = runtime / "stale.pid"
+    for path in (log, status, pid):
+        path.write_text("", encoding="utf-8")
+    meta.write_text(
+        json.dumps(
+            {
+                "name": "stale",
+                "pid": 4242,
+                "pid_path": str(pid),
+                "log_path": str(log),
+                "status_path": str(status),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(manager, "_pid_running", lambda _pid, _payload: False)
+
+    result = manager.disconnect_session(str(meta))
+
+    assert result.success is True
+    assert not meta.exists()
+
+
+def test_classic_openvpn_stop_all_reports_disconnect_failure(tmp_path: Path, monkeypatch) -> None:
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+    runtime = tmp_path / "openvpn" / "runtime"
+    meta = runtime / "live.json"
+    meta.write_text(json.dumps({"name": "live", "pid": 4242}), encoding="utf-8")
+    monkeypatch.setattr(manager, "_pid_running", lambda _pid, _payload: True)
+    monkeypatch.setattr(manager, "disconnect_session", lambda _path: __import__("kopdes.application.dtos.runtime_state", fromlist=["ActionResult"]).ActionResult(False, "stop failed"))
+
+    result = manager.stop_all_sessions()
+
+    assert result.success is False
+    assert "live" in (result.details or "")
+
+
+def test_classic_openvpn_runtime_helpers_parse_states_and_interfaces(tmp_path: Path) -> None:
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+
+    assert manager._parse_runtime_text("Initialization Sequence Completed\n") == "connected"
+    assert manager._parse_runtime_text("AUTH_FAILED\n") == "failed"
+    assert manager._parse_runtime_text("Restart pause, 5 second(s)\n") == "reconnecting"
+    assert manager._parse_runtime_text("TLS: Initial packet\n") == "connecting"
+    assert manager._parse_runtime_text("unrelated\n") is None
+    assert manager._read_status_text({"status_path": "", "log_path": ""}) == "running"
+    assert manager._resolve_interface_name({"interface_name": "tun9"}) == "tun9"
+    assert manager._config_bool("on") is True
+    assert manager._config_bool("off") is False
+
+
+def test_classic_openvpn_read_runtime_logs_bounds_limit(tmp_path: Path, monkeypatch) -> None:
+    manager = ClassicOpenVpnManager(FakeRunner(), tmp_path)
+    log = tmp_path / "openvpn" / "runtime" / "logs.log"
+    log.write_text("\n".join(f"line-{index}" for index in range(5)), encoding="utf-8")
+    monkeypatch.setattr(manager, "_runtime_log_path", lambda _alias: log)
+
+    assert manager.read_runtime_logs("logs", 2) == ["line-3", "line-4"]
+    assert manager.read_runtime_logs("logs", "bad")[-1] == "line-4"

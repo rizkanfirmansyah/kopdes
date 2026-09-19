@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from threading import Lock
 
@@ -33,17 +34,23 @@ class CommandRunner:
         self._processes_lock = Lock()
         self._processes: dict[int, subprocess.Popen] = {}
 
-    def run(self, command: list[str], timeout: int = 30) -> CommandResult:
-        return self._execute(command, timeout)
+    def run(
+        self,
+        command: list[str],
+        timeout: int = 30,
+        redact_values: Iterable[str] = (),
+    ) -> CommandResult:
+        return self._execute(command, timeout, redact_values)
 
     def run_privileged(
         self,
         command: list[str],
         timeout: int = 30,
         interactive: bool = False,
+        redact_values: Iterable[str] = (),
     ) -> CommandResult:
         privileged = self._build_privileged_command(command, interactive)
-        return self._execute(privileged, timeout)
+        return self._execute(privileged, timeout, redact_values)
 
     def request_stop_all(self) -> None:
         """Ask only commands started by this runner to stop, without waiting."""
@@ -52,7 +59,12 @@ class CommandRunner:
         for process in processes:
             self._signal_process(process, signal.SIGTERM, process.pid)
 
-    def _execute(self, command: list[str], timeout: int) -> CommandResult:
+    def _execute(
+        self,
+        command: list[str],
+        timeout: int,
+        redact_values: Iterable[str] = (),
+    ) -> CommandResult:
         if not command or any(not isinstance(item, str) or not item for item in command):
             raise ValueError("Command must be a non-empty argv list.")
         try:
@@ -62,7 +74,8 @@ class CommandRunner:
         if timeout_seconds <= 0:
             raise ValueError("Command timeout must be greater than zero.")
 
-        safe_command = self._redact_command(command)
+        secret_values = tuple(sorted({str(value) for value in redact_values if str(value)}, key=len, reverse=True))
+        safe_command = [self._redact_text(item, secret_values) for item in self._redact_command(command)]
         LOGGER.debug("Executing command: %s", shlex.join(safe_command))
         process: subprocess.Popen | None = None
         stdout_buffer = bytearray()
@@ -129,11 +142,11 @@ class CommandRunner:
             else:
                 return_code = process.wait(timeout=1)
 
-            stdout = self._format_output(stdout_buffer, stdout_truncated)
-            stderr = self._format_output(stderr_buffer, stderr_truncated)
+            stdout = self._format_output(stdout_buffer, stdout_truncated, secret_values)
+            stderr = self._format_output(stderr_buffer, stderr_truncated, secret_values)
             if return_code == 124:
                 message = f"Command timed out after {timeout} seconds: {command[0]}"
-                return CommandResult(safe_command, 124, stdout, stderr or message)
+                return CommandResult(safe_command, 124, stdout, stderr or self._redact_text(message, secret_values))
             return CommandResult(
                 command=safe_command,
                 return_code=return_code,
@@ -143,21 +156,21 @@ class CommandRunner:
         except FileNotFoundError:
             message = f"Command not found: {command[0]}"
             LOGGER.warning(message)
-            return CommandResult(safe_command, 127, "", message)
+            return CommandResult(safe_command, 127, "", self._redact_text(message, secret_values))
         except PermissionError:
             LOGGER.warning("Permission denied while executing %s", command[0])
-            return CommandResult(safe_command, 126, "", f"Permission denied: {command[0]}")
+            return CommandResult(safe_command, 126, "", self._redact_text(f"Permission denied: {command[0]}", secret_values))
         except subprocess.TimeoutExpired:
             message = f"Command timed out after {timeout} seconds: {command[0]}"
             LOGGER.warning(message)
             if process is not None:
                 self._terminate_process(process)
-            return CommandResult(safe_command, 124, "", message)
+            return CommandResult(safe_command, 124, "", self._redact_text(message, secret_values))
         except OSError as exc:
             LOGGER.exception("OS error while executing %s", command[0])
             if process is not None:
                 self._terminate_process(process)
-            return CommandResult(safe_command, 125, "", str(exc))
+            return CommandResult(safe_command, 125, "", self._redact_text(str(exc), secret_values))
         finally:
             if process is not None:
                 with self._processes_lock:
@@ -219,9 +232,21 @@ class CommandRunner:
         except OSError:
             return False
 
-    def _format_output(self, output: bytearray, truncated: bool) -> str:
+    def _format_output(
+        self,
+        output: bytearray,
+        truncated: bool,
+        secret_values: Iterable[str] = (),
+    ) -> str:
         text = self._decode_output(bytes(output))
+        text = self._redact_text(text, secret_values)
         return "[output truncated]\n" + text if truncated else text
+
+    def _redact_text(self, text: str, secret_values: Iterable[str] = ()) -> str:
+        for value in secret_values:
+            if value:
+                text = text.replace(value, "<redacted>")
+        return text
 
     def _build_privileged_command(self, command: list[str], interactive: bool) -> list[str]:
         if os.geteuid() == 0:

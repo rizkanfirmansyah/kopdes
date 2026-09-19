@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from kopdes.domain.entities.connection_profile import ConnectionProfile
@@ -71,7 +71,7 @@ class NetworkEngine:
             id=str(uuid4()),
             profile_id=profile.id,
             status=ConnectionStatus.CONNECTING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             last_error=None,
         )
 
@@ -83,7 +83,7 @@ class NetworkEngine:
             id=str(uuid4()),
             profile_id=profile.id,
             status=ConnectionStatus.DISCONNECTING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             last_error=None,
         )
 

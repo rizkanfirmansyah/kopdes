@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>KOPDES Logs &amp; Diagnostics</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "inverse-on-surface": "#2b3133",
+                        "on-surface-variant": "#bcc9cc",
+                        "error-container": "#93000a",
+                        "surface-dim": "#0f1416",
+                        "on-secondary-fixed": "#35003f",
+                        "on-background": "#dee3e5",
+                        "primary-fixed": "#9eefff",
+                        "secondary-container": "#86039c",
+                        "tertiary-fixed-dim": "#ffb875",
+                        "secondary-fixed": "#ffd6fe",
+                        "on-surface": "#dee3e5",
+                        "tertiary-container": "#da8a36",
+                        "primary-container": "#00acc1",
+                        "secondary": "#f9abff",
+                        "on-secondary-fixed-variant": "#7b008f",
+                        "background": "#0f1416",
+                        "primary-fixed-dim": "#55d7ed",
+                        "surface-container-highest": "#303637",
+                        "on-error-container": "#ffdad6",
+                        "tertiary-fixed": "#ffdcc0",
+                        "error": "#ffb4ab",
+                        "on-tertiary-fixed-variant": "#6b3b00",
+                        "surface-tint": "#55d7ed",
+                        "on-primary-fixed-variant": "#004e59",
+                        "on-tertiary-fixed": "#2d1600",
+                        "on-tertiary": "#4b2800",
+                        "on-secondary-container": "#f7a0ff",
+                        "on-error": "#690005",
+                        "inverse-surface": "#dee3e5",
+                        "inverse-primary": "#006876",
+                        "on-tertiary-container": "#502b00",
+                        "on-primary-container": "#003a42",
+                        "outline-variant": "#3d494b",
+                        "surface": "#0f1416",
+                        "outline": "#869396",
+                        "tertiary": "#ffb875",
+                        "secondary-fixed-dim": "#f9abff",
+                        "on-secondary": "#570066",
+                        "surface-container": "#1b2122",
+                        "surface-bright": "#343a3b",
+                        "surface-variant": "#303637",
+                        "surface-container-high": "#252b2c",
+                        "surface-container-low": "#171d1e",
+                        "on-primary-fixed": "#001f24",
+                        "primary": "#55d7ed",
+                        "on-primary": "#00363e",
+                        "surface-container-lowest": "#090f10"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "base": "4px",
+                        "md": "16px",
+                        "panel-padding": "20px",
+                        "gutter": "16px",
+                        "sm": "8px",
+                        "xs": "4px",
+                        "lg": "24px",
+                        "xl": "32px"
+                    },
+                    "fontFamily": {
+                        "headline-md": ["Inter"],
+                        "data-mono": ["JetBrains Mono"],
+                        "headline-lg": ["Inter"],
+                        "label-caps": ["Inter"],
+                        "body-md": ["Inter"],
+                        "body-lg": ["Inter"]
+                    },
+                    "fontSize": {
+                        "headline-md": ["20px", { "lineHeight": "28px", "fontWeight": "600" }],
+                        "data-mono": ["13px", { "lineHeight": "18px", "letterSpacing": "-0.01em", "fontWeight": "400" }],
+                        "headline-lg": ["24px", { "lineHeight": "32px", "fontWeight": "600" }],
+                        "label-caps": ["11px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "700" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body { background-color: theme('colors.background'); color: theme('colors.on-background'); }
+        .log-terminal { background-color: #000000; overflow-y: auto; scroll-behavior: smooth; }
+        .log-terminal::-webkit-scrollbar { width: 8px; }
+        .log-terminal::-webkit-scrollbar-track { background: #0a0a0a; }
+        .log-terminal::-webkit-scrollbar-thumb { background: theme('colors.outline-variant'); border-radius: 4px; }
+        
+        /* Log Levels */
+        .log-info { color: theme('colors.on-surface'); }
+        .log-debug { color: theme('colors.outline'); }
+        .log-warn { color: theme('colors.tertiary'); }
+        .log-err { color: theme('colors.error'); }
+        .log-timestamp { color: theme('colors.on-surface-variant'); opacity: 0.7; }
+        
+        .tab-btn.active {
+            border-bottom: 2px solid theme('colors.primary');
+            color: theme('colors.primary');
+        }
+    </style>
+</head>
+<body class="flex h-screen overflow-hidden antialiased font-body-md text-body-md">
+<!-- SideNavBar (JSON Component) -->
+<nav class="hidden md:flex fixed left-0 top-0 h-full z-50 flex flex-col py-md bg-surface-container-low dark:bg-surface-container-low border-r border-outline-variant h-screen w-64 flex-col">
+<div class="px-md mb-xl flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary" data-icon="hub">hub</span>
+<span class="font-headline-lg text-headline-lg text-primary">KOPDES</span>
+</div>
+<div class="px-md mb-md">
+<div class="flex items-center gap-sm bg-surface-container rounded p-sm">
+<img class="w-8 h-8 rounded-full object-cover" data-alt="A small, ultra-minimalist avatar representing a system node. The image features a sleek, geometric 3D rendering of a server unit glowing with faint cyan lights against a pitch-black background, conveying a high-tech, clinical network aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAuSZ4WBkiLN6kTdIbQFQO4zwSPYUK36IZE3uzCeC9e4Gk9FZsXBsFjSCE2v-JjIpU-OfmbDLhsBccij3BdW1je-qpyZ6U2n11PLVOgyUzovNLEGf4_ftNkzRQ7m2igGF-1rMZs8d-86Jo2fS9WAffLbMmdSVZFwDjkX4rIdkMXNNXluGimGjkA1-zuRmbsx6jVv5umUZinN1IbsxybGFByBO_DPREnswLAZx6dyHpBo67waxNrTuvnZQ"/>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface">Core_Node_01</div>
+<div class="font-data-mono text-data-mono text-on-surface-variant">192.168.1.1</div>
+</div>
+</div>
+</div>
+<ul class="flex flex-col gap-xs flex-1 mt-md">
+<li class="flex items-center gap-sm px-md py-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-highest transition-colors cursor-pointer active:translate-x-1 transition-transform font-label-caps text-label-caps">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span> Dashboard
+            </li>
+<li class="flex items-center gap-sm px-md py-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-highest transition-colors cursor-pointer active:translate-x-1 transition-transform font-label-caps text-label-caps">
+<span class="material-symbols-outlined" data-icon="settings_ethernet">settings_ethernet</span> Interfaces
+            </li>
+<li class="flex items-center gap-sm px-md py-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-highest transition-colors cursor-pointer active:translate-x-1 transition-transform font-label-caps text-label-caps">
+<span class="material-symbols-outlined" data-icon="alt_route">alt_route</span> Routing
+            </li>
+<li class="flex items-center gap-sm px-md py-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-highest transition-colors cursor-pointer active:translate-x-1 transition-transform font-label-caps text-label-caps">
+<span class="material-symbols-outlined" data-icon="security">security</span> Firewall
+            </li>
+<!-- Active State -->
+<li class="flex items-center gap-sm px-md py-sm text-primary dark:text-primary border-l-2 border-primary bg-surface-container-high cursor-pointer font-label-caps text-label-caps">
+<span class="material-symbols-outlined" data-icon="list_alt">list_alt</span> Logs
+            </li>
+<li class="flex items-center gap-sm px-md py-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-highest transition-colors cursor-pointer active:translate-x-1 transition-transform font-label-caps text-label-caps">
+<span class="material-symbols-outlined" data-icon="terminal">terminal</span> Terminal
+            </li>
+</ul>
+<div class="mt-auto border-t border-outline-variant pt-md">
+<ul class="flex flex-col gap-xs">
+<li class="flex items-center gap-sm px-md py-sm text-on-surface-variant hover:bg-surface-container transition-colors cursor-pointer font-label-caps text-label-caps">
+<span class="material-symbols-outlined" data-icon="help_outline">help_outline</span> Support
+                </li>
+<li class="flex items-center gap-sm px-md py-sm text-on-surface-variant hover:bg-surface-container transition-colors cursor-pointer font-label-caps text-label-caps">
+<span class="material-symbols-outlined" data-icon="timer">timer</span> Uptime
+                </li>
+</ul>
+</div>
+</nav>
+<!-- Main Content Area -->
+<main class="flex-1 md:ml-64 flex flex-col min-w-0 bg-background h-screen">
+<!-- TopNavBar (JSON Component Adaptation for context) -->
+<header class="flex justify-between items-center px-md w-full h-14 bg-surface-container dark:bg-surface-container border-b border-outline-variant dark:border-outline-variant shrink-0 z-40">
+<div class="flex items-center gap-sm md:hidden">
+<span class="material-symbols-outlined text-primary" data-icon="menu">menu</span>
+<span class="font-headline-md text-headline-md font-bold text-primary dark:text-primary">NetAdmin Pro</span>
+</div>
+<div class="hidden md:flex items-center">
+<span class="font-headline-md text-headline-md font-bold text-on-surface">Logs &amp; Diagnostics</span>
+</div>
+<div class="flex items-center gap-sm">
+<div class="relative hidden sm:block">
+<span class="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-on-surface-variant text-sm" data-icon="search">search</span>
+<input class="bg-[#181818] border border-[#2A2A2A] text-on-surface rounded pl-8 pr-3 py-1 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors w-64 font-data-mono text-data-mono h-8" placeholder="Search logs..." type="text"/>
+</div>
+<button class="p-xs text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer active:opacity-80 transition-all">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+</button>
+<button class="p-xs text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer active:opacity-80 transition-all">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+</button>
+<img class="w-8 h-8 rounded-full ml-sm border border-outline-variant object-cover" data-alt="Administrator Profile avatar. A clean, professional headshot or geometric placeholder representing an admin user, set against a dark grey background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAhxWYyUp-7YrBopfGdoqW-VWc5y5LS4LcDPwOzwWK8WIIMnj5sBQwwMQ6BN1bPUm8prNRDmYV4QR2sgvPeBWrASdP_qTdBvZnG4RR4bHUMWxGNvzjdaihaEBHPI7F3--_hz3rCF36mcOKPoCa3-LS25fFPB1OWXPO73iQhE8A1nVns9TucRgOPcrPLgcogu-_9LDbJEGcHACwgucbhwzsjx4b-Z2deGRLGwSwwyz-h5CRtR119EJJy5Q"/>
+</div>
+</header>
+<!-- Canvas -->
+<div class="flex-1 flex flex-col md:flex-row overflow-hidden p-panel-padding gap-md">
+<!-- Left Panel: Log Viewer -->
+<div class="flex-1 flex flex-col bg-[#1E1E1E] rounded-lg border border-outline-variant overflow-hidden flex-col h-full relative z-10 shadow-[0_0_15px_rgba(0,0,0,0.2)]">
+<!-- Log Toolbar -->
+<div class="flex items-center justify-between p-sm border-b border-outline-variant bg-surface-container-high shrink-0">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary text-sm" data-icon="monitor_heart">monitor_heart</span>
+<span class="font-label-caps text-label-caps text-on-surface">System Stream</span>
+</div>
+<div class="flex gap-xs">
+<!-- Filters -->
+<button class="px-2 py-1 rounded bg-[#2A2A2A] text-on-surface font-label-caps text-[10px] hover:bg-[#3A3A3A] transition-colors border border-outline-variant opacity-50 cursor-pointer">DEBUG</button>
+<button class="px-2 py-1 rounded bg-primary-container text-on-primary-container font-label-caps text-[10px] transition-colors border border-primary-container cursor-pointer">INFO</button>
+<button class="px-2 py-1 rounded bg-[#2A2A2A] text-on-surface font-label-caps text-[10px] hover:bg-[#3A3A3A] transition-colors border border-outline-variant cursor-pointer flex items-center gap-1">
+                            WARN <span class="bg-tertiary text-on-tertiary px-1 rounded-sm text-[9px]">2</span>
+</button>
+<button class="px-2 py-1 rounded bg-[#2A2A2A] text-error font-label-caps text-[10px] hover:bg-error hover:text-on-error transition-colors border border-error cursor-pointer flex items-center gap-1">
+                            ERROR <span class="bg-error text-on-error px-1 rounded-sm text-[9px]">1</span>
+</button>
+<div class="w-px h-4 bg-outline-variant mx-1 self-center"></div>
+<button class="p-1 text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer" title="Pause Stream">
+<span class="material-symbols-outlined text-[16px]" data-icon="pause">pause</span>
+</button>
+<button class="p-1 text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer" title="Clear Logs">
+<span class="material-symbols-outlined text-[16px]" data-icon="delete">delete</span>
+</button>
+</div>
+</div>
+<!-- Log Terminal Area -->
+<div class="flex-1 log-terminal p-sm font-data-mono text-data-mono whitespace-pre-wrap break-all relative" id="logContainer">
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:02:11.452]</span> <span class="text-primary">[SYS]</span> <span class="log-info">KOPDES Daemon initialized. PID: 4912</span></div>
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:02:11.480]</span> <span class="text-primary">[SYS]</span> <span class="log-info">Loading configuration from /etc/kopdes/node.conf</span></div>
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:02:11.512]</span> <span class="text-outline">[NET]</span> <span class="log-debug">Binding to interface eth0 (192.168.1.1:8080)</span></div>
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:02:12.001]</span> <span class="text-primary">[SYS]</span> <span class="log-info">Establish peer connection to cluster-coord-01...</span></div>
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:02:12.304]</span> <span class="text-tertiary">[SEC]</span> <span class="log-warn">WARN: SSL certificate for peer cluster-coord-01 expires in 3 days.</span></div>
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:02:13.110]</span> <span class="text-primary">[SYS]</span> <span class="log-info">Peer connection established. State: SYNCING</span></div>
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:02:15.892]</span> <span class="text-outline">[RTE]</span> <span class="log-debug">Recalculating shortest path tree. Nodes: 14, Edges: 28</span></div>
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:02:16.044]</span> <span class="text-primary">[SYS]</span> <span class="log-info">Sync complete. System operational.</span></div>
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:05:01.000]</span> <span class="text-outline">[JOB]</span> <span class="log-debug">Executing scheduled task: metrics_flush</span></div>
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:08:22.105]</span> <span class="text-tertiary">[NET]</span> <span class="log-warn">WARN: High latency detected on interface wg0 (185ms). Threshold is 150ms.</span></div>
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:10:05.333]</span> <span class="text-outline">[SSH]</span> <span class="log-debug">Incoming connection from 10.0.5.22</span></div>
+<div class="log-line mb-1 bg-error/10 border-l-2 border-error pl-1"><span class="log-timestamp">[2023-10-27 14:10:06.102]</span> <span class="text-error">[SSH]</span> <span class="log-err">ERROR: Authentication failed for user 'admin' from 10.0.5.22. Invalid credentials.</span></div>
+<div class="log-line mb-1"><span class="log-timestamp">[2023-10-27 14:10:06.105]</span> <span class="text-outline">[SSH]</span> <span class="log-debug">Connection closed from 10.0.5.22</span></div>
+<!-- Blinking cursor effect -->
+<div class="animate-pulse w-2 h-4 bg-primary inline-block mt-1"></div>
+</div>
+</div>
+<!-- Right Panel: Diagnostics -->
+<div class="w-full md:w-80 flex flex-col bg-[#1E1E1E] rounded-lg border border-outline-variant overflow-hidden shrink-0 shadow-[0_0_15px_rgba(0,0,0,0.2)]">
+<!-- Tabs -->
+<div class="flex border-b border-outline-variant bg-surface-container shrink-0">
+<button class="flex-1 py-sm font-label-caps text-label-caps tab-btn active transition-colors">DIAGNOSTICS</button>
+<button class="flex-1 py-sm font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface border-b-2 border-transparent transition-colors">METRICS</button>
+</div>
+<!-- Diagnostics Content -->
+<div class="flex-1 p-md overflow-y-auto">
+<div class="mb-md">
+<div class="flex justify-between items-center mb-sm">
+<span class="font-headline-md text-[14px] font-semibold text-on-surface">Health Check</span>
+<button class="text-primary hover:text-primary-fixed transition-colors cursor-pointer p-1">
+<span class="material-symbols-outlined text-[16px]" data-icon="refresh">refresh</span>
+</button>
+</div>
+<div class="space-y-sm">
+<!-- Success Item -->
+<div class="flex items-start gap-sm bg-[#252525] p-sm rounded border border-[#2A2A2A]">
+<span class="material-symbols-outlined text-primary text-[18px] shrink-0" data-icon="check_circle" data-weight="fill">check_circle</span>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface">Interface eth0 available</div>
+<div class="font-data-mono text-[11px] text-on-surface-variant mt-xs">Link up, 1000Mbps, Full Duplex</div>
+</div>
+</div>
+<!-- Success Item -->
+<div class="flex items-start gap-sm bg-[#252525] p-sm rounded border border-[#2A2A2A]">
+<span class="material-symbols-outlined text-primary text-[18px] shrink-0" data-icon="check_circle" data-weight="fill">check_circle</span>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface">Default Gateway reachable</div>
+<div class="font-data-mono text-[11px] text-on-surface-variant mt-xs">Ping: 1.2ms (192.168.1.254)</div>
+</div>
+</div>
+<!-- Success Item -->
+<div class="flex items-start gap-sm bg-[#252525] p-sm rounded border border-[#2A2A2A]">
+<span class="material-symbols-outlined text-primary text-[18px] shrink-0" data-icon="check_circle" data-weight="fill">check_circle</span>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface">DNS Resolution</div>
+<div class="font-data-mono text-[11px] text-on-surface-variant mt-xs">Resolved api.kopdes.net in 12ms</div>
+</div>
+</div>
+<!-- Failed Item -->
+<div class="flex items-start gap-sm bg-error-container/20 p-sm rounded border border-error/50">
+<span class="material-symbols-outlined text-error text-[18px] shrink-0 mt-0.5" data-icon="cancel" data-weight="fill">cancel</span>
+<div>
+<div class="font-label-caps text-label-caps text-error">SSH Authentication Failed</div>
+<div class="font-data-mono text-[11px] text-on-surface-variant mt-xs">Last attempt: 14:10:06 from 10.0.5.22<br/>Reason: Invalid credentials provided.</div>
+<button class="mt-2 px-2 py-1 bg-transparent border border-error text-error text-[10px] font-label-caps rounded hover:bg-error hover:text-on-error transition-colors w-full cursor-pointer">INVESTIGATE BLOCK</button>
+</div>
+</div>
+<!-- Pending/Neutral Item -->
+<div class="flex items-start gap-sm bg-[#252525] p-sm rounded border border-[#2A2A2A] opacity-60">
+<span class="material-symbols-outlined text-outline text-[18px] shrink-0 animate-spin" data-icon="sync">sync</span>
+<div>
+<div class="font-label-caps text-label-caps text-on-surface">Cluster Sync Validation</div>
+<div class="font-data-mono text-[11px] text-outline mt-xs">Awaiting quorum response...</div>
+</div>
+</div>
+</div>
+</div>
+<div class="border-t border-outline-variant pt-md mt-md">
+<span class="font-headline-md text-[14px] font-semibold text-on-surface block mb-sm">Quick Actions</span>
+<div class="grid grid-cols-2 gap-sm">
+<button class="bg-[#2A2A2A] hover:bg-[#353535] border border-outline-variant rounded p-sm flex flex-col items-center justify-center gap-xs transition-colors cursor-pointer">
+<span class="material-symbols-outlined text-on-surface" data-icon="restart_alt">restart_alt</span>
+<span class="font-label-caps text-[10px] text-on-surface">Restart Svc</span>
+</button>
+<button class="bg-[#2A2A2A] hover:bg-[#353535] border border-outline-variant rounded p-sm flex flex-col items-center justify-center gap-xs transition-colors cursor-pointer">
+<span class="material-symbols-outlined text-on-surface" data-icon="download">download</span>
+<span class="font-label-caps text-[10px] text-on-surface">Export Logs</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<script>
+        // Simple auto-scroll for terminal simulation
+        const term = document.getElementById('logContainer');
+        term.scrollTop = term.scrollHeight;
+    </script>
+</body></html>

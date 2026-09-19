@@ -73,11 +73,11 @@ class ConnectionFilterProxyModel(QSortFilterProxyModel):
 
     def set_query(self, query: str) -> None:
         self._query = str(query or "").strip().lower()
-        self.invalidateFilter()
+        self.invalidate()
 
     def set_status(self, status: str) -> None:
         self._status = str(status or "all").strip().lower()
-        self.invalidateFilter()
+        self.invalidate()
 
     def filterAcceptsRow(self, source_row: int, source_parent) -> bool:
         del source_parent

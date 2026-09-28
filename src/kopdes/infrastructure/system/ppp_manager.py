@@ -286,6 +286,9 @@ class PppManager:
             create = self._ensure_nmcli_profile(profile)
             if not create.success:
                 return create
+            persisted = self._persist_nmcli_secrets(profile, password, ipsec_psk)
+            if not persisted.success:
+                return persisted
             secret_path = self._create_nmcli_passwd_file(profile, password, ipsec_psk)
             command = ["nmcli", "connection", "up", "id", profile.name]
             if secret_path is not None:
@@ -306,6 +309,7 @@ class PppManager:
 
     def _ensure_nmcli_profile(self, profile: ConnectionProfile, password: str | None = None) -> ActionResult:
         del password
+        self._delete_stale_nmcli_connections(profile.name)
         if profile.protocol == ProtocolType.PPPOE:
             ifname = str(profile.config_payload.get("interface_name", "eth0")).strip() or "eth0"
             command = [
@@ -330,6 +334,8 @@ class PppManager:
                 vpn_data.append(f"user={profile.username}")
             if profile.protocol == ProtocolType.L2TP_IPSEC:
                 vpn_data.append("ipsec-enabled=yes")
+                vpn_data.append("ipsec-psk-flags=0")
+            vpn_data.append("password-flags=0")
             command = [
                 "nmcli",
                 "connection",
@@ -364,6 +370,56 @@ class PppManager:
                 return ActionResult(True, f"Reused system profile '{profile.name}'.", self._result_detail(modify))
             return ActionResult(False, "Failed to update the existing nmcli profile.", self._result_detail(modify))
         return ActionResult(False, "Failed to create nmcli profile.", detail)
+
+    def _persist_nmcli_secrets(
+        self,
+        profile: ConnectionProfile,
+        password: str | None,
+        ipsec_psk: str,
+    ) -> ActionResult:
+        """Store secrets in the system connection (flags=0) via stdin so the VPN plugin sees them without an agent.
+
+        network-manager-l2tp does not honor 'nmcli connection up ... passwd-file' for its secrets; it only reads
+        them from the connection itself. Secrets are piped over stdin to 'nmcli connection edit', never argv.
+        """
+        if profile.protocol == ProtocolType.PPPOE:
+            if not password:
+                return ActionResult(True, "No secrets to persist.")
+            script = f"set pppoe.password {password}\nsave\nquit\n"
+            redact = [password]
+        else:
+            parts = []
+            if password:
+                parts.append(f"password={password}")
+            if ipsec_psk:
+                parts.append(f"ipsec-psk={ipsec_psk}")
+            if not parts:
+                return ActionResult(True, "No secrets to persist.")
+            script = f"set vpn.secrets {', '.join(parts)}\nsave\nquit\n"
+            redact = [password, ipsec_psk]
+        result = self._run_privileged(
+            ["nmcli", "connection", "edit", "id", profile.name],
+            timeout=30,
+            redact_values=redact,
+            stdin_data=script,
+        )
+        if result.return_code != 0 or "error" in result.stdout.lower():
+            return ActionResult(
+                False,
+                "Failed to store connection secrets.",
+                self._result_detail(result, redact),
+            )
+        return ActionResult(True, "Secrets stored.")
+
+    def _delete_stale_nmcli_connections(self, name: str) -> None:
+        """Remove prior nmcli connections with this name so 'up id NAME' cannot resolve to a stale duplicate."""
+        listing = self._run_privileged(["nmcli", "-t", "-f", "NAME,UUID", "connection", "show"], timeout=20)
+        if listing.return_code != 0:
+            return
+        for line in listing.stdout.splitlines():
+            con_name, _, uuid = line.partition(":")
+            if con_name == name and uuid:
+                self._run_privileged(["nmcli", "connection", "delete", "uuid", uuid], timeout=30)
 
     def _create_pppd_options(self, username: str | None, password: str | None) -> Path:
         lines: list[str] = []
@@ -672,20 +728,30 @@ class PppManager:
         command: list[str],
         timeout: int,
         redact_values: Iterable[str | None] = (),
+        stdin_data: str | None = None,
     ) -> CommandResult:
         safe_values = tuple(value for value in redact_values if value)
         runner = getattr(self._command_runner, "run_privileged", None)
         if runner is None:
             try:
-                return self._command_runner.run(command, timeout=timeout, redact_values=safe_values)
+                return self._command_runner.run(
+                    command, timeout=timeout, redact_values=safe_values, stdin_data=stdin_data
+                )
             except TypeError:
                 return self._command_runner.run(command, timeout=timeout)
+        kwargs: dict[str, object] = {"timeout": timeout, "interactive": True}
+        if safe_values:
+            kwargs["redact_values"] = safe_values
+        if stdin_data is not None:
+            kwargs["stdin_data"] = stdin_data
         try:
-            if safe_values:
-                return runner(command, timeout=timeout, interactive=True, redact_values=safe_values)
-            return runner(command, timeout=timeout, interactive=True)
+            return runner(command, **kwargs)
         except TypeError:
-            return runner(command, timeout=timeout)
+            kwargs.pop("stdin_data", None)
+            try:
+                return runner(command, **kwargs)
+            except TypeError:
+                return runner(command, timeout=timeout)
 
     def _result_detail(self, result: CommandResult, secret_values: Iterable[str | None] = ()) -> str:
         detail = result.stderr.strip() or result.stdout.strip()

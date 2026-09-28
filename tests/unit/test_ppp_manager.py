@@ -44,8 +44,10 @@ def test_missing_l2tp_plugin_returns_install_hint() -> None:
 
 def test_connect_surfaces_missing_l2tp_plugin_from_nmcli(monkeypatch) -> None:
     class Runner:
-        def run_privileged(self, command, timeout=30, interactive=False):
+        def run_privileged(self, command, timeout=30, interactive=False, **kwargs):
             if command[:5] == ["nmcli", "connection", "add", "type", "vpn"]:
+                return CommandResult(command, 0, "", "")
+            if command[:3] == ["nmcli", "connection", "edit"]:
                 return CommandResult(command, 0, "", "")
             return CommandResult(
                 command,

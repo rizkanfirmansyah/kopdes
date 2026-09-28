@@ -39,8 +39,9 @@ class CommandRunner:
         command: list[str],
         timeout: int = 30,
         redact_values: Iterable[str] = (),
+        stdin_data: str | None = None,
     ) -> CommandResult:
-        return self._execute(command, timeout, redact_values)
+        return self._execute(command, timeout, redact_values, stdin_data)
 
     def run_privileged(
         self,
@@ -48,9 +49,10 @@ class CommandRunner:
         timeout: int = 30,
         interactive: bool = False,
         redact_values: Iterable[str] = (),
+        stdin_data: str | None = None,
     ) -> CommandResult:
         privileged = self._build_privileged_command(command, interactive)
-        return self._execute(privileged, timeout, redact_values)
+        return self._execute(privileged, timeout, redact_values, stdin_data)
 
     def request_stop_all(self) -> None:
         """Ask only commands started by this runner to stop, without waiting."""
@@ -64,6 +66,7 @@ class CommandRunner:
         command: list[str],
         timeout: int,
         redact_values: Iterable[str] = (),
+        stdin_data: str | None = None,
     ) -> CommandResult:
         if not command or any(not isinstance(item, str) or not item for item in command):
             raise ValueError("Command must be a non-empty argv list.")
@@ -86,7 +89,7 @@ class CommandRunner:
         try:
             process = subprocess.Popen(
                 command,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
@@ -95,6 +98,14 @@ class CommandRunner:
             )
             with self._processes_lock:
                 self._processes[process.pid] = process
+
+            if stdin_data is not None and process.stdin is not None:
+                try:
+                    process.stdin.write(stdin_data.encode("utf-8"))
+                except (BrokenPipeError, OSError):
+                    pass
+                finally:
+                    process.stdin.close()
 
             streams = ((process.stdout, stdout_buffer), (process.stderr, stderr_buffer))
             with selectors.DefaultSelector() as selector:
